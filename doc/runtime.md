@@ -17,9 +17,13 @@ binaries, boot artifacts, and host prerequisites pass validation.
 | Network ACL and managed DNS | Supported | Not supported | Supported | Supported |
 | Published-port DNAT | Supported | Supported | Supported | Supported |
 | Writable-layer quota | Supported | Not supported | Not supported | Supported |
+| Checkpoint and restore | Supported (systrap and KVM) | Not supported | Not supported | Supported |
 | NVIDIA GPU | Experimental nvproxy support | Not supported | Not supported | Not supported |
 | Cgroup-disabled mode | Experimental | Not supported | Not supported | Not supported |
 | KVM | Optional execution platform; not exposed to the sandbox | Optional guest exposure | Required by the runtime | Required by the runtime; nested KVM is not exposed |
+
+See [Checkpoint and restore](checkpoint-restore.md) for the API design,
+artifact ownership, failure semantics, and compatibility requirements.
 
 ## Selection and configuration
 

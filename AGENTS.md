@@ -70,6 +70,13 @@ passes those binaries to five independent matrix jobs. Keep the gVisor TAP
 contract, network ACL cases, and AKernel's shared manifest consumer in sync
 when changing this path.
 
+# Checkpoint and Restore Contract
+
+When changing the checkpoint/restore API, runtime support, artifact ownership,
+compatibility requirements, or failure semantics, update
+`doc/checkpoint-restore.md` in the same change so the public design contract
+stays synchronized with the implementation.
+
 # Firecracker Storage Contract
 
 The Firecracker adapter accepts only local or image-provider-backed regular

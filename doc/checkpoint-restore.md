@@ -1,0 +1,103 @@
+# Checkpoint and restore
+
+sandboxd supports checkpointing a running sandbox into a caller-owned
+directory and starting a new sandbox from that checkpoint.
+
+## Design
+
+The API has two operations:
+
+1. `SandboxService.Checkpoint` checkpoints an existing sandbox.
+2. The existing `Start` RPC restores a sandbox when `checkpoint_info` is set.
+
+There is no separate restore RPC. Restore is a form of sandbox creation, so it
+uses the normal `Start` path to allocate the target sandbox's filesystem,
+network, cgroup, and other resources.
+
+sandboxd coordinates the runtime operation and cleans partial output. It does
+not manage checkpoint names, catalogs, storage, transfer, retention, or
+compatibility negotiation. The caller chooses the checkpoint directory and
+owns a successful artifact.
+
+## Checkpoint API
+
+`CheckpointRequest` contains:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | ID of the running source sandbox |
+| `checkpoint_dir` | Absolute local directory for the checkpoint artifact |
+| `timeout_seconds` | Maximum time sandboxd waits for checkpoint completion |
+| `compress` | Ask the runtime to compress the checkpoint image |
+| `leave_running` | Keep the source running after a successful checkpoint |
+
+`timeout_seconds` must be greater than zero and is enforced by sandboxd.
+Caller cancellation may end the operation earlier. Only one checkpoint may be
+in progress for a source sandbox at a time.
+
+`checkpoint_dir` must be absolute, must not be `/`, and must not contain
+symbolic links. Its parent must already exist. The leaf may be absent, in which
+case sandboxd creates it, or it may be an existing empty directory. sandboxd
+never overwrites a non-empty directory.
+
+The directory is the artifact boundary. Its contents are opaque and specific
+to the runtime that created them.
+
+## Source and failure semantics
+
+`leave_running` defines only the successful result:
+
+| Result | Source sandbox |
+| --- | --- |
+| Success with `leave_running=true` | Continues running |
+| Success with `leave_running=false` | Is stopped by the runtime |
+| Error, timeout, or cancellation | State is not guaranteed |
+
+After a successful checkpoint with `leave_running=false`, the caller still
+deletes the source through the normal sandbox API to release its metadata and
+resources.
+
+On failure, sandboxd returns an error and does not force-delete, stop, or
+resume the source. The caller decides how to handle the source sandbox.
+sandboxd only cleans partial checkpoint output: it removes a leaf directory it
+created, or empties a caller-provided leaf directory while preserving it.
+
+## Restore through Start
+
+To restore, the caller sends a normal `StartRequest` for the target sandbox and
+sets:
+
+```text
+checkpoint_info: {
+  checkpoint_dir: "/absolute/path/to/checkpoint"
+}
+```
+
+The caller must still provide the normal `Start` configuration, including the
+runtime, root filesystem, resources, mounts, and network settings. The target
+should use a new sandbox ID and receives newly allocated sandboxd resources.
+
+If restore fails, sandboxd rolls back the partially created target. It does not
+modify the source or delete the checkpoint input. After `Start` succeeds, the
+target no longer depends on the checkpoint directory.
+
+## Runtime support and compatibility
+
+| Runtime | Checkpoint and restore |
+| --- | --- |
+| runsc with systrap | Supported |
+| runsc with KVM | Supported |
+| Firecracker | Supported |
+| Kata Containers | Not supported |
+| runc | Not supported |
+
+Unsupported runtimes return `Unimplemented`.
+
+A checkpoint must be restored with the same runtime and a compatible runtime
+binary, machine architecture, host or guest kernel, and runtime configuration.
+Compression changes only the runtime-specific artifact encoding; it does not
+make an artifact portable.
+
+Incremental checkpoints, deterministic replay, migration orchestration, and
+automatic recovery of a source after checkpoint failure are outside this
+design.
