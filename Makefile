@@ -100,12 +100,12 @@ storage-test: ## run privileged loop-backed filesystem integration tests
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$${tmpdir}"' EXIT; \
 	$(GO) test ${GO_TAGS} -c -o "$${tmpdir}/volumemanager.test" ./pkg/volumemanager; \
-	$(GO) test ${GO_TAGS} -c -o "$${tmpdir}/runtime.test" ./pkg/runtime; \
+	$(GO) test ${GO_TAGS} -c -o "$${tmpdir}/runtime-common.test" ./pkg/runtime/internal/common; \
 	sudo env SANDBOXD_RUN_STORAGE_INTEGRATION=1 \
 		"$${tmpdir}/volumemanager.test" \
 		-test.v -test.run '^TestLoopBackedFilestoreIntegration$$'; \
 	sudo env SANDBOXD_RUN_STORAGE_INTEGRATION=1 \
-		"$${tmpdir}/runtime.test" \
+		"$${tmpdir}/runtime-common.test" \
 		-test.v -test.run '^TestEROFSLoopDeviceDirIntegration$$'
 
 e2e: ## run unit tests and the selected privileged runtime e2e flows

@@ -29,6 +29,7 @@ import (
 	"github.com/inclusionAI/sandboxd/config"
 	"github.com/inclusionAI/sandboxd/pkg/networkmanager"
 	svc "github.com/inclusionAI/sandboxd/pkg/runtime"
+	"github.com/inclusionAI/sandboxd/pkg/runtime/firecracker"
 	"github.com/inclusionAI/sandboxd/pkg/sandbox"
 	"github.com/inclusionAI/sandboxd/pkg/store"
 	"github.com/inclusionAI/sandboxd/pkg/volumemanager"
@@ -206,7 +207,7 @@ func TestStartRejectsWritableLayerLimitForRunc(t *testing.T) {
 
 func TestStartRejectsFirecrackerOCIImageBeforeFilesystemPrepare(t *testing.T) {
 	s := newTestService(t, map[string]svc.Handler{
-		config.RuntimeNameFirecracker: &svc.FirecrackerHandler{},
+		config.RuntimeNameFirecracker: &firecracker.Handler{},
 	})
 	response, err := s.Start(context.Background(), &runtime.StartRequest{
 		Runtime: config.RuntimeNameFirecracker,

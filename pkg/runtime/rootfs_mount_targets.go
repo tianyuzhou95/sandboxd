@@ -22,9 +22,9 @@ import (
 	"strings"
 )
 
-// createRootfsMountTargets seeds mount points in a new per-sandbox upper or
+// CreateRootfsMountTargets seeds mount points in a new per-sandbox upper or
 // placeholder directory. Callers must not pass a shared image rootfs here.
-func createRootfsMountTargets(root string, mounts []Mount) error {
+func CreateRootfsMountTargets(root string, mounts []Mount) error {
 	for _, mount := range mounts {
 		target, ok := placeholderMountTarget(root, mount.Destination)
 		if !ok {
@@ -50,10 +50,10 @@ func createRootfsMountTargets(root string, mounts []Mount) error {
 	return nil
 }
 
-// rootfsMountTargetsReady checks a lower rootfs without following symlinks.
+// RootfsMountTargetsReady checks a lower rootfs without following symlinks.
 // A symlinked component is treated as requiring a private upper entry so
 // privileged preparation never writes through an untrusted image symlink.
-func rootfsMountTargetsReady(bundlePath string, spec *Spec) (bool, error) {
+func RootfsMountTargetsReady(bundlePath string, spec *Spec) (bool, error) {
 	if spec == nil || spec.Root == nil || spec.Root.Path == "" {
 		return false, errors.New("root filesystem is missing")
 	}

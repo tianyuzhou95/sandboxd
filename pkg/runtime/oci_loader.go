@@ -36,8 +36,10 @@ const (
 	// NetworkClassAnnoKey is the key of network class annotation.
 	NetworkClassAnnoKey = "sandbox.akernel.dev/network-class"
 
-	gvisorRootfsAnnotationPrefix = "dev.gvisor.spec.rootfs."
-	gvisorRootfsTypeEROFS        = "erofs"
+	// GVisorRootfsAnnotationPrefix prefixes rootfs image annotations consumed by runsc.
+	// GVisorRootfsTypeEROFS identifies EROFS-backed rootfs images.
+	GVisorRootfsAnnotationPrefix = "dev.gvisor.spec.rootfs."
+	GVisorRootfsTypeEROFS        = "erofs"
 	gvisorRootfsOverlayDirPrefix = "dir="
 )
 
@@ -260,15 +262,15 @@ func applyGVisorRootfsImageAnnotations(
 	if spec.Annotations == nil {
 		spec.Annotations = map[string]string{}
 	}
-	spec.Annotations[gvisorRootfsAnnotationPrefix+"source"] = rootfsImage
-	spec.Annotations[gvisorRootfsAnnotationPrefix+"type"] = gvisorRootfsTypeEROFS
+	spec.Annotations[GVisorRootfsAnnotationPrefix+"source"] = rootfsImage
+	spec.Annotations[GVisorRootfsAnnotationPrefix+"type"] = GVisorRootfsTypeEROFS
 	if !spec.Root.Readonly {
 		if overlayDir == "" {
 			return errors.New("gVisor writable rootfs image requires a filestore directory")
 		}
-		spec.Annotations[gvisorRootfsAnnotationPrefix+"overlay"] = gvisorRootfsOverlayDirPrefix + overlayDir
+		spec.Annotations[GVisorRootfsAnnotationPrefix+"overlay"] = gvisorRootfsOverlayDirPrefix + overlayDir
 		if overlaySize != "" {
-			spec.Annotations[gvisorRootfsAnnotationPrefix+"options"] = "size=" + overlaySize
+			spec.Annotations[GVisorRootfsAnnotationPrefix+"options"] = "size=" + overlaySize
 		}
 	}
 	spec.Root.Path = placeholderRootfs
@@ -293,7 +295,7 @@ func createRootfsPlaceholder(root string, mounts []Mount) error {
 		}
 	}
 
-	return createRootfsMountTargets(root, mounts)
+	return CreateRootfsMountTargets(root, mounts)
 }
 
 func placeholderMountTarget(root, destination string) (string, bool) {

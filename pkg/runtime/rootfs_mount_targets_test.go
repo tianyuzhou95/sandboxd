@@ -18,7 +18,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 )
 
@@ -32,7 +31,7 @@ func TestCreateRootfsMountTargets(t *testing.T) {
 		{Type: "bind", Source: fileSource, Destination: "/etc/hosts"},
 		{Type: "bind", Source: t.TempDir(), Destination: "/data"},
 	}
-	if err := createRootfsMountTargets(root, mounts); err != nil {
+	if err := CreateRootfsMountTargets(root, mounts); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Lstat(filepath.Join(root, "etc", "hosts")); err != nil || !info.Mode().IsRegular() {
@@ -53,7 +52,7 @@ func TestRootfsMountTargetsReadyForReadonlyDirectory(t *testing.T) {
 		Root:   &Root{Path: root, Readonly: true},
 		Mounts: []Mount{{Type: "bind", Source: fileSource, Destination: "/etc/hosts"}},
 	}
-	ready, err := rootfsMountTargetsReady(t.TempDir(), spec)
+	ready, err := RootfsMountTargetsReady(t.TempDir(), spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +65,7 @@ func TestRootfsMountTargetsReadyForReadonlyDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "etc", "hosts"), nil, 0644); err != nil {
 		t.Fatal(err)
 	}
-	ready, err = rootfsMountTargetsReady(t.TempDir(), spec)
+	ready, err = RootfsMountTargetsReady(t.TempDir(), spec)
 	if err != nil || !ready {
 		t.Fatalf("existing target was not ready: ready=%v err=%v", ready, err)
 	}
@@ -86,7 +85,7 @@ func TestRootfsMountTargetsReadyDoesNotFollowImageSymlink(t *testing.T) {
 		Root:   &Root{Path: root, Readonly: true},
 		Mounts: []Mount{{Type: "bind", Source: fileSource, Destination: "/etc/hosts"}},
 	}
-	ready, err := rootfsMountTargetsReady(t.TempDir(), spec)
+	ready, err := RootfsMountTargetsReady(t.TempDir(), spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,78 +94,5 @@ func TestRootfsMountTargetsReadyDoesNotFollowImageSymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(external, "hosts")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("external path was modified: %v", err)
-	}
-}
-
-func TestPrepareRunscPrivateRootfsSeedsReadonlyDirectoryTargets(t *testing.T) {
-	bundlePath := t.TempDir()
-	lowerDir := t.TempDir()
-	fileSource := filepath.Join(t.TempDir(), "hosts")
-	if err := os.WriteFile(fileSource, nil, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bundlePath, "config.json"), []byte("{}"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	originalMount := mountRunscNVProxyOverlay
-	originalUnmount := unmountRunscNVProxyPath
-	t.Cleanup(func() {
-		mountRunscNVProxyOverlay = originalMount
-		unmountRunscNVProxyPath = originalUnmount
-	})
-	mountRunscNVProxyOverlay = func(_, upper, _, _ string) error {
-		info, err := os.Lstat(filepath.Join(upper, "etc", "hosts"))
-		if err != nil || !info.Mode().IsRegular() {
-			return errors.New("runsc upper file target was not prepared")
-		}
-		return nil
-	}
-	unmountRunscNVProxyPath = func(string, int) error { return syscall.EINVAL }
-
-	spec := &Spec{
-		Root:   &Root{Path: lowerDir, Readonly: true},
-		Mounts: []Mount{{Type: "bind", Source: fileSource, Destination: "/etc/hosts"}},
-	}
-	cleanup, err := prepareRunscPrivateRootfs(bundlePath, spec, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !spec.Root.Readonly {
-		t.Fatal("readonly OCI root was made writable")
-	}
-	if err := cleanup(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestPrepareKataDirectoryRootfsSeedsMountTargets(t *testing.T) {
-	bundlePath := t.TempDir()
-	lowerDir := t.TempDir()
-	fileSource := filepath.Join(t.TempDir(), "resolv.conf")
-	if err := os.WriteFile(fileSource, nil, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bundlePath, "config.json"), []byte("{}"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	originalMount := mountKataOverlay
-	t.Cleanup(func() { mountKataOverlay = originalMount })
-	mountKataOverlay = func(_, upper, _, _ string) error {
-		info, err := os.Lstat(filepath.Join(upper, "etc", "resolv.conf"))
-		if err != nil || !info.Mode().IsRegular() {
-			return errors.New("Kata upper file target was not prepared")
-		}
-		return nil
-	}
-
-	_, err := prepareKataDirectoryRootfs(bundlePath, lowerDir, []Mount{{
-		Type:        "bind",
-		Source:      fileSource,
-		Destination: "/etc/resolv.conf",
-	}}, true)
-	if err != nil {
-		t.Fatal(err)
 	}
 }

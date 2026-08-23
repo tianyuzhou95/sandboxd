@@ -45,23 +45,8 @@ func (r *BundleLoader) SandboxDefaults() SandboxDefaults {
 	return defaults
 }
 
-func (r *RunscHandler) SandboxDefaults() SandboxDefaults {
-	return loaderSandboxDefaults(r.ociLoader)
-}
-
-func (k *KataHandler) SandboxDefaults() SandboxDefaults {
-	return loaderSandboxDefaults(k.ociLoader)
-}
-
-func (r *RuncHandler) SandboxDefaults() SandboxDefaults {
-	return loaderSandboxDefaults(r.ociLoader)
-}
-
-func (f *FirecrackerHandler) SandboxDefaults() SandboxDefaults {
-	return loaderSandboxDefaults(f.ociLoader)
-}
-
-func loaderSandboxDefaults(loader OciLoader) SandboxDefaults {
+// LoaderSandboxDefaults returns the defaults exposed by an OCI loader.
+func LoaderSandboxDefaults(loader OciLoader) SandboxDefaults {
 	if provider, ok := loader.(SandboxDefaultsProvider); ok {
 		return provider.SandboxDefaults()
 	}

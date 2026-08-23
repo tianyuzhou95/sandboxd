@@ -130,7 +130,7 @@ func (h *sandboxService) loadRuntimeHandlers() {
 			if h.serviceHandler.Has(runtimeName) {
 				continue
 			}
-			handler, err := svc.NewHandler(h.config, runtimeBin, runtimeName)
+			handler, err := newRuntimeHandler(h.config, runtimeBin, runtimeName)
 			if err != nil {
 				if runtimeName == config.RuntimeNameRunsc {
 					logrus.Warnf("load required runtime %v handler failed: %v", runtimeName, err)
@@ -203,7 +203,10 @@ func (h *sandboxService) startSandboxRuntime(
 		if h.cgroupMgr == nil {
 			return errors.New("cgroup manager is not configured")
 		}
-		hostResources := svc.HostCgroupResources(runtimeName, startConfig.Resources)
+		hostResources := startConfig.Resources
+		if provider, ok := handler.(svc.HostResourcesProvider); ok {
+			hostResources = provider.HostResources(startConfig.Resources)
+		}
 		if err = h.cgroupMgr.Prepare(startConfig.CgroupPath, hostResources); err != nil {
 			return fmt.Errorf("prepare cgroup %s: %w", startConfig.CgroupPath, err)
 		}

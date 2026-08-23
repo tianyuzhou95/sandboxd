@@ -277,10 +277,10 @@ func TestGenerateOciUsesDiskBackedRootfsImageOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := spec.Annotations[gvisorRootfsAnnotationPrefix+"overlay"]; got != "dir="+filestoreDir {
+	if got := spec.Annotations[GVisorRootfsAnnotationPrefix+"overlay"]; got != "dir="+filestoreDir {
 		t.Fatalf("rootfs overlay annotation = %q", got)
 	}
-	if got := spec.Annotations[gvisorRootfsAnnotationPrefix+"options"]; got != "size=1073741824" {
+	if got := spec.Annotations[GVisorRootfsAnnotationPrefix+"options"]; got != "size=1073741824" {
 		t.Fatalf("rootfs options annotation = %q", got)
 	}
 	if spec.Root.Path != "rootfs" {
