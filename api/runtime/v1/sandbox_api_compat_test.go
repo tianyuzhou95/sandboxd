@@ -23,9 +23,9 @@ import (
 	"google.golang.org/protobuf/reflect/protodesc"
 )
 
-// TestWireContract pins the public protobuf descriptor while allowing
+// TestV010WireContract pins the public protobuf descriptor while allowing
 // comments and generated-code details to change.
-func TestWireContract(t *testing.T) {
+func TestV010WireContract(t *testing.T) {
 	descriptor := protodesc.ToFileDescriptorProto(File_api_runtime_v1_sandbox_api_proto)
 	descriptor.SourceCodeInfo = nil
 	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(descriptor)

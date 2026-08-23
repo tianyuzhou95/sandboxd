@@ -22,65 +22,18 @@ import (
 	"strconv"
 
 	runtime "github.com/inclusionAI/sandboxd/api/runtime/v1"
-	"github.com/inclusionAI/sandboxd/config"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
 	kataDefaultVCPUsAnnotation  = "io.katacontainers.config.hypervisor.default_vcpus"
 	kataDefaultMemoryAnnotation = "io.katacontainers.config.hypervisor.default_memory"
 	kataMinimumMemoryMiB        = 64
-	// A full snapshot faults every guest page into the VMM. Keep host-only
-	// headroom for Firecracker itself without changing guest-visible memory.
-	firecrackerHostMemoryOverheadBytes = int64(64 * 1024 * 1024)
 )
 
 func kataHostResources(
 	resource *runtime.LinuxSandboxResources,
 ) *runtime.LinuxSandboxResources {
-	if resource == nil {
-		return nil
-	}
-	return proto.Clone(resource).(*runtime.LinuxSandboxResources)
-}
-
-func firecrackerHostResources(
-	resource *runtime.LinuxSandboxResources,
-) *runtime.LinuxSandboxResources {
-	host := kataHostResources(resource)
-	if host == nil || host.MemoryLimitInBytes <= 0 {
-		return host
-	}
-	host.MemoryLimitInBytes = addFirecrackerMemoryOverhead(host.MemoryLimitInBytes)
-	if host.MemorySwapLimitInBytes > 0 {
-		host.MemorySwapLimitInBytes = addFirecrackerMemoryOverhead(
-			host.MemorySwapLimitInBytes,
-		)
-	}
-	return host
-}
-
-func addFirecrackerMemoryOverhead(value int64) int64 {
-	if value > int64(^uint64(0)>>1)-firecrackerHostMemoryOverheadBytes {
-		return int64(^uint64(0) >> 1)
-	}
-	return value + firecrackerHostMemoryOverheadBytes
-}
-
-// HostCgroupResources maps sandbox resources to the host cgroup enclosing a
-// runtime. VM runtimes receive clones because their guest sizing and outer
-// runtime process constraints are separate concerns.
-func HostCgroupResources(
-	runtimeName string,
-	resource *runtime.LinuxSandboxResources,
-) *runtime.LinuxSandboxResources {
-	if runtimeName == config.RuntimeNameFirecracker {
-		return firecrackerHostResources(resource)
-	}
-	if runtimeName == config.RuntimeNameKata {
-		return kataHostResources(resource)
-	}
-	return resource
+	return cloneHostResources(resource)
 }
 
 // prepareKataResourceSpec gives the VM an explicit topology while its outer
