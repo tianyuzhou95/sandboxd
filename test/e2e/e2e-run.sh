@@ -147,6 +147,10 @@ cleanup() {
         log "sandboxd log tail"
         tail -200 "${LOG_FILE}" >&2
     fi
+    if [ "${status}" -ne 0 ] && [ -f /var/log/sandboxd/checkpoint-runtime.stderr ]; then
+        log "checkpoint runtime stderr tail"
+        tail -200 /var/log/sandboxd/checkpoint-runtime.stderr >&2
+    fi
     if [ "${status}" -ne 0 ] && [ -d /home/akernel/logs/runsc ]; then
         local runsc_log
         while IFS= read -r runsc_log; do
@@ -200,7 +204,7 @@ preflight() {
     fi
 
     local bin
-    for bin in sandboxd sbox ip iptables busybox mkfs.erofs; do
+    for bin in sandboxd sbox checkpoint-restore ip iptables busybox mkfs.erofs; do
         command -v "${bin}" >/dev/null 2>&1 || fail "missing command: ${bin}"
     done
     case "${E2E_RUNTIME}" in
@@ -675,6 +679,131 @@ run_dnat_check() {
     assert_eq "${dnat_response}" "${expected}" \
         "${runtime_name} local DNAT"
 
+    sbox_cmd delete "${SANDBOX_ID}"
+    SANDBOX_ID=""
+}
+
+run_checkpoint_restore_check() {
+    local runtime="$1"
+    local rootfs="$2"
+    local suffix="${runtime}"
+    if [ "${runtime}" = "runsc" ]; then
+        suffix="${runtime}-${RUNSC_PLATFORM}"
+    fi
+    local source_id="sbox-e2e-${suffix}-cr-source"
+    local target_id="sbox-e2e-${suffix}-cr-target"
+    local request_file="/tmp/${suffix}-checkpoint-request.json"
+    local checkpoint_parent="${SANDBOXD_HOME}/e2e-checkpoints"
+    local checkpoint_dir="${checkpoint_parent}/${suffix}"
+    local memory_mb=128
+    if [ "${runtime}" = "firecracker" ]; then
+        memory_mb=256
+    fi
+
+    log "testing ${suffix} checkpoint/restore with a new sandbox ID"
+    mkdir -p "${checkpoint_parent}"
+    rm -rf -- "${checkpoint_dir}"
+    rm -f -- "${request_file}"
+    SANDBOX_ID="$(checkpoint-restore \
+        --action start \
+        --socket "${SOCKET}" \
+        --runtime "${runtime}" \
+        --rootfs "${rootfs}" \
+        --sandbox-id "${source_id}" \
+        --request-file "${request_file}" \
+        --memory-mb "${memory_mb}" \
+        --storage-mb 64)"
+    assert_eq "${SANDBOX_ID}" "${source_id}" "${suffix} checkpoint source ID"
+    wait_for_state "${SANDBOX_ID}" "SANDBOX_STATE_RUNNING" 300
+    sbox_cmd exec "${SANDBOX_ID}" /bin/sh -c \
+        'echo checkpoint-state-ok > /var/checkpoint-persist'
+
+    local before=""
+    local attempt
+    for attempt in $(seq 1 100); do
+        before="$(sbox_cmd exec "${SANDBOX_ID}" \
+            /bin/cat /var/checkpoint-counter 2>/dev/null || true)"
+        if [[ "${before}" =~ ^[0-9]+$ ]] && [ "${before}" -gt 2 ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    [[ "${before}" =~ ^[0-9]+$ ]] && [ "${before}" -gt 2 ] ||
+        fail "${suffix} checkpoint source counter is invalid: ${before@Q}"
+
+    checkpoint-restore \
+        --action checkpoint \
+        --socket "${SOCKET}" \
+        --sandbox-id "${source_id}" \
+        --request-file "${request_file}" \
+        --checkpoint-dir "${checkpoint_dir}" \
+        --checkpoint-timeout-seconds 180 \
+        --compress=true \
+        --leave-running=true
+    [ -s "${checkpoint_dir}/checkpoint.img" ] ||
+        fail "${suffix} checkpoint artifact is missing or empty"
+
+    local source_after=""
+    for attempt in $(seq 1 100); do
+        source_after="$(sbox_cmd exec "${SANDBOX_ID}" \
+            /bin/cat /var/checkpoint-counter 2>/dev/null || true)"
+        if [[ "${source_after}" =~ ^[0-9]+$ ]] && [ "${source_after}" -gt "${before}" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    [[ "${source_after}" =~ ^[0-9]+$ ]] && [ "${source_after}" -gt "${before}" ] ||
+        fail "${suffix} source did not continue after leave_running checkpoint"
+    local source_network
+    source_network="$(sbox_cmd exec "${SANDBOX_ID}" \
+        /bin/wget -qO- "http://${GATEWAY_IP}:${HTTP_PORT}/health.txt")"
+    assert_eq "${source_network}" "sandboxd-network-ok" \
+        "${suffix} source network after checkpoint"
+
+    sbox_cmd delete "${SANDBOX_ID}"
+    SANDBOX_ID=""
+    SANDBOX_ID="$(checkpoint-restore \
+        --action restore \
+        --socket "${SOCKET}" \
+        --target-id "${target_id}" \
+        --request-file "${request_file}" \
+        --checkpoint-dir "${checkpoint_dir}")"
+    assert_eq "${SANDBOX_ID}" "${target_id}" "${suffix} restored sandbox ID"
+    wait_for_state "${SANDBOX_ID}" "SANDBOX_STATE_RUNNING" 300
+
+    local persisted
+    persisted="$(sbox_cmd exec "${SANDBOX_ID}" /bin/cat /var/checkpoint-persist)"
+    assert_eq "${persisted}" "checkpoint-state-ok" "${suffix} restored writable state"
+    if ! sbox_cmd exec "${SANDBOX_ID}" \
+        /bin/sh -c 'test ! -e /var/checkpoint-restarted'; then
+        fail "${suffix} restore re-executed the sandbox entrypoint"
+    fi
+    local restored=""
+    for attempt in $(seq 1 100); do
+        restored="$(sbox_cmd exec "${SANDBOX_ID}" \
+            /bin/cat /var/checkpoint-counter 2>/dev/null || true)"
+        if [[ "${restored}" =~ ^[0-9]+$ ]] && [ "${restored}" -ge "${before}" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    [[ "${restored}" =~ ^[0-9]+$ ]] && [ "${restored}" -ge "${before}" ] ||
+        fail "${suffix} restored counter lost checkpoint state: before=${before} restored=${restored}"
+    sleep 0.3
+    local advanced
+    advanced="$(sbox_cmd exec "${SANDBOX_ID}" /bin/cat /var/checkpoint-counter)"
+    [[ "${advanced}" =~ ^[0-9]+$ ]] && [ "${advanced}" -gt "${restored}" ] ||
+        fail "${suffix} restored process stopped: ${restored} -> ${advanced}"
+    local restored_network
+    restored_network="$(sbox_cmd exec "${SANDBOX_ID}" \
+        /bin/wget -qO- "http://${GATEWAY_IP}:${HTTP_PORT}/health.txt")"
+    assert_eq "${restored_network}" "sandboxd-network-ok" "${suffix} restored network"
+
+    rm -rf -- "${checkpoint_dir}"
+    [ ! -e "${checkpoint_dir}" ] || fail "${suffix} caller cleanup retained checkpoint"
+    persisted="$(sbox_cmd exec "${SANDBOX_ID}" /bin/cat /var/checkpoint-persist)"
+    assert_eq "${persisted}" "checkpoint-state-ok" \
+        "${suffix} target independent of checkpoint directory"
     sbox_cmd delete "${SANDBOX_ID}"
     SANDBOX_ID=""
 }
@@ -1275,7 +1404,7 @@ run_firecracker_checks() {
 
     local cache_cgroup
     cache_cgroup="$(wait_for_cgroup_child)"
-    assert_cgroup_limits "${cache_cgroup}" 1500 256
+    assert_cgroup_limits "${cache_cgroup}" 1500 320
 
     local got
     wait_for_exec_output "${SANDBOX_ID}" "firecracker-env-ok" /bin/cat /var/start-env
@@ -1464,6 +1593,7 @@ run_firecracker_checks() {
 
     run_dnat_check firecracker "Firecracker" "${EROFS_ROOTFS}" 256
 
+    run_checkpoint_restore_check firecracker "${EROFS_ROOTFS}"
     run_storage_quota_check firecracker "${EROFS_ROOTFS}"
     run_stress_checks firecracker "${EROFS_ROOTFS}"
 }
@@ -1522,6 +1652,7 @@ run_runsc_checks() {
     fi
 
     run_dnat_check runsc "runsc" "${ROOTFS}" 128
+    run_checkpoint_restore_check runsc "${ROOTFS}"
     run_storage_quota_check
 
     log "starting immediate OOM sandbox"

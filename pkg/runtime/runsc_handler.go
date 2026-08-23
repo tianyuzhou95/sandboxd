@@ -33,10 +33,13 @@ import (
 )
 
 var _ Handler = &RunscHandler{}
+var _ CheckpointHandler = &RunscHandler{}
 
 const (
-	ImageName      = "rootfs.img"
-	SplitSeparator = "__.__"
+	ImageName                  = "rootfs.img"
+	SplitSeparator             = "__.__"
+	checkpointImageName        = "checkpoint.img"
+	runscRestoreCleanupTimeout = 20 * time.Second
 )
 
 type RunscHandler struct {
@@ -52,6 +55,8 @@ type RunscHandler struct {
 type runscClient interface {
 	Create(context.Context, runscapi.StartArgs) error
 	Start(context.Context, runscapi.StartArgs) error
+	Checkpoint(context.Context, string, string, bool, bool) error
+	Restore(context.Context, runscapi.StartArgs, string) error
 	Wait(context.Context, string) (int, error)
 	Delete(context.Context, string, bool) error
 	ListJSON(context.Context) ([]byte, error)
@@ -165,6 +170,102 @@ func (r *RunscHandler) Start(ctx context.Context, config StartConfig) error {
 		return err
 	}
 	logrus.WithField(trace.ContextKeyTraceId, traceID).Debugf("call runsc create/start, args: %+v, cost: %v", startArgs, time.Since(start))
+	return nil
+}
+
+func (r *RunscHandler) Checkpoint(ctx context.Context, config CheckpointConfig) error {
+	return r.runsc.Checkpoint(
+		ctx,
+		config.ID,
+		config.Directory,
+		config.Compress,
+		config.LeaveRunning,
+	)
+}
+
+func (r *RunscHandler) Restore(
+	ctx context.Context,
+	config StartConfig,
+) (retErr error) {
+	traceID, _ := trace.GetContextID(ctx)
+	if config.Network == nil {
+		return fmt.Errorf("network is required")
+	}
+	rootOverlay, rootOverlaySize, err := r.resolveRootOverlay(
+		config.WritableLayerLimitBytes,
+	)
+	if err != nil {
+		return err
+	}
+	bundlePath, ociSpec, err := r.ociLoader.GenerateOci(OciLoadOptions{
+		SandboxID:                       config.ID,
+		Config:                          config,
+		CgroupPath:                      config.CgroupPath,
+		UseGVisorRootfsImageAnnotations: true,
+		RootfsOverlayDir:                r.filestoreDir,
+		RootfsOverlaySize:               rootOverlaySize,
+	})
+	if err != nil {
+		return fmt.Errorf("generate OCI bundle: %w", err)
+	}
+	mountTargetsReady, err := rootfsMountTargetsReady(bundlePath, ociSpec)
+	if err != nil {
+		return fmt.Errorf("inspect rootfs mount targets: %w", err)
+	}
+	requiresHostWritableRootfs := config.SpecUpdates != nil &&
+		config.SpecUpdates.RequiresHostWritableRootfs
+	var cleanupNVProxyRootfs func() error
+	if requiresHostWritableRootfs || !mountTargetsReady {
+		cleanupNVProxyRootfs, err = prepareRunscPrivateRootfsWithMounter(
+			bundlePath,
+			ociSpec,
+			requiresHostWritableRootfs,
+			r.mountEROFS,
+		)
+		if err != nil {
+			return fmt.Errorf("prepare private runsc rootfs: %w", err)
+		}
+	}
+	cleanupFailure := func() error {
+		cleanupCtx, cancel := context.WithTimeout(
+			context.Background(),
+			runscRestoreCleanupTimeout,
+		)
+		defer cancel()
+		cleanupErr := r.runsc.Delete(cleanupCtx, config.ID, true)
+		if cleanupNVProxyRootfs != nil {
+			cleanupErr = errors.Join(cleanupErr, cleanupNVProxyRootfs())
+		}
+		return cleanupErr
+	}
+
+	startArgs := runscapi.StartArgs{
+		ID:          config.ID,
+		BundleDir:   bundlePath,
+		UserStdout:  config.Stdout,
+		UserStderr:  config.Stderr,
+		RootOverlay: rootOverlay,
+		Network: runscapi.NetworkConfig{
+			Interface:   config.Network.Interface,
+			LinkAddress: config.Network.GuestHardwareAddr(),
+			IP:          config.Network.Ip,
+			Mask:        config.Network.Mask,
+			Gateway:     config.Network.Gateway,
+		},
+	}
+	start := time.Now()
+	if err := r.runsc.Create(ctx, startArgs); err != nil {
+		return errors.Join(err, cleanupFailure())
+	}
+	imagePath := filepath.Join(config.CheckpointDir, checkpointImageName)
+	if err := r.runsc.Restore(ctx, startArgs, imagePath); err != nil {
+		return errors.Join(err, cleanupFailure())
+	}
+	logrus.WithField(trace.ContextKeyTraceId, traceID).Debugf(
+		"call runsc create/restore, args: %+v, cost: %v",
+		startArgs,
+		time.Since(start),
+	)
 	return nil
 }
 

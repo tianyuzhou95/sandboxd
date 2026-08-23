@@ -807,6 +807,30 @@ func TestKataHostResourcesRetainsCPUControls(t *testing.T) {
 	}
 }
 
+func TestFirecrackerHostResourcesAddsRuntimeMemoryOverhead(t *testing.T) {
+	const requested = int64(256 * 1024 * 1024)
+	original := &runtime.LinuxSandboxResources{
+		CpuQuota:               50000,
+		CpuPeriod:              100000,
+		MemoryLimitInBytes:     requested,
+		MemorySwapLimitInBytes: requested,
+	}
+	host := HostCgroupResources(config.RuntimeNameFirecracker, original)
+	if host.MemoryLimitInBytes != requested+firecrackerHostMemoryOverheadBytes {
+		t.Fatalf("host memory limit = %d", host.MemoryLimitInBytes)
+	}
+	if host.MemorySwapLimitInBytes != requested+firecrackerHostMemoryOverheadBytes {
+		t.Fatalf("host swap limit = %d", host.MemorySwapLimitInBytes)
+	}
+	if host.CpuQuota != original.CpuQuota || host.CpuPeriod != original.CpuPeriod {
+		t.Fatalf("host CPU resources = %+v", host)
+	}
+	if original.MemoryLimitInBytes != requested ||
+		original.MemorySwapLimitInBytes != requested {
+		t.Fatal("HostCgroupResources mutated the guest resource request")
+	}
+}
+
 func loadKataTestSpec(t *testing.T, bundlePath string) *Spec {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(bundlePath, "config.json"))

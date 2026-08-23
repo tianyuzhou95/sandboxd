@@ -44,7 +44,6 @@ func newFirecrackerAPI(socket string) *firecrackerAPI {
 		socket: socket,
 		client: &http.Client{
 			Transport: transport,
-			Timeout:   5 * time.Second,
 		},
 	}
 }
@@ -67,13 +66,26 @@ func (api *firecrackerAPI) waitReady(ctx context.Context) error {
 }
 
 func (api *firecrackerAPI) put(ctx context.Context, path string, value any) error {
+	return api.request(ctx, http.MethodPut, path, value)
+}
+
+func (api *firecrackerAPI) patch(ctx context.Context, path string, value any) error {
+	return api.request(ctx, http.MethodPatch, path, value)
+}
+
+func (api *firecrackerAPI) request(
+	ctx context.Context,
+	method,
+	path string,
+	value any,
+) error {
 	payload, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
 	request, err := http.NewRequestWithContext(
 		ctx,
-		http.MethodPut,
+		method,
 		"http://localhost"+path,
 		bytes.NewReader(payload),
 	)
@@ -83,7 +95,7 @@ func (api *firecrackerAPI) put(ctx context.Context, path string, value any) erro
 	request.Header.Set("Content-Type", "application/json")
 	response, err := api.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("Firecracker PUT %s: %w", path, err)
+		return fmt.Errorf("Firecracker %s %s: %w", method, path, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusBadRequest {
@@ -92,11 +104,57 @@ func (api *firecrackerAPI) put(ctx context.Context, path string, value any) erro
 	}
 	body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 	return fmt.Errorf(
-		"Firecracker PUT %s returned %s: %s",
+		"Firecracker %s %s returned %s: %s",
+		method,
 		path,
 		response.Status,
 		bytes.TrimSpace(body),
 	)
+}
+
+func (api *firecrackerAPI) pause(ctx context.Context) error {
+	return api.patch(ctx, "/vm", map[string]string{"state": "Paused"})
+}
+
+func (api *firecrackerAPI) resume(ctx context.Context) error {
+	return api.patch(ctx, "/vm", map[string]string{"state": "Resumed"})
+}
+
+func (api *firecrackerAPI) createSnapshot(
+	ctx context.Context,
+	statePath,
+	memoryPath string,
+) error {
+	return api.put(ctx, "/snapshot/create", map[string]any{
+		"snapshot_type": "Full",
+		"snapshot_path": statePath,
+		"mem_file_path": memoryPath,
+	})
+}
+
+func (api *firecrackerAPI) loadSnapshot(
+	ctx context.Context,
+	statePath,
+	memoryPath,
+	tapName,
+	vsockPath string,
+) error {
+	return api.put(ctx, "/snapshot/load", map[string]any{
+		"snapshot_path": statePath,
+		"mem_backend": map[string]string{
+			"backend_type": "File",
+			"backend_path": memoryPath,
+		},
+		"track_dirty_pages": true,
+		"resume_vm":         true,
+		"network_overrides": []map[string]string{{
+			"iface_id":      "eth0",
+			"host_dev_name": tapName,
+		}},
+		"vsock_override": map[string]string{
+			"uds_path": vsockPath,
+		},
+	})
 }
 
 func firecrackerDrivePath(id string) string {
@@ -124,9 +182,10 @@ func configureFirecrackerVM(
 		return err
 	}
 	if err := api.put(ctx, "/machine-config", map[string]any{
-		"vcpu_count":   vcpus,
-		"mem_size_mib": memoryMiB,
-		"smt":          false,
+		"vcpu_count":        vcpus,
+		"mem_size_mib":      memoryMiB,
+		"smt":               false,
+		"track_dirty_pages": true,
 	}); err != nil {
 		return err
 	}

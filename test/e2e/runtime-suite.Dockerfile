@@ -49,6 +49,7 @@ COPY output/sandbox-logger /usr/local/bin/sandbox-logger
 COPY output/firecracker-agent /usr/local/bin/firecracker-agent
 COPY output/oom-hog /usr/local/bin/oom-hog
 COPY output/network-policy-client /usr/local/bin/network-policy-client
+COPY output/checkpoint-restore /usr/local/bin/checkpoint-restore
 COPY test/e2e/e2e-run.sh /usr/local/bin/sandboxd-e2e-run
 
 ARG E2E_RUNTIME
@@ -156,6 +157,7 @@ RUN set -eux; \
       /usr/local/bin/firecracker-agent \
       /usr/local/bin/oom-hog \
       /usr/local/bin/network-policy-client \
+      /usr/local/bin/checkpoint-restore \
       /usr/local/bin/sandboxd-e2e-run
 
 ENTRYPOINT ["/usr/local/bin/sandboxd-e2e-run"]

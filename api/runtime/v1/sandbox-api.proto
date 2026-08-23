@@ -22,6 +22,8 @@ option go_package = "github.com/inclusionAI/sandboxd/api/runtime/v1;v1";
 service SandboxService {
   // Start creates and starts a sandbox.
   rpc Start(StartRequest) returns (StartResponse) {}
+  // Checkpoint saves a running sandbox into a caller-owned directory.
+  rpc Checkpoint(CheckpointRequest) returns (CheckpointResponse) {}
   // Delete force-deletes a sandbox.
   rpc Delete(DeleteRequest) returns (DeleteResponse) {}
   // Wait waits for a sandbox to exit.
@@ -185,6 +187,12 @@ message XpuAllocation {
   repeated uint32 device_ids = 2;
 }
 
+// CheckpointInfo selects checkpoint restore mode for Start.
+message CheckpointInfo {
+  // CheckpointDir is the caller-owned directory containing runtime artifacts.
+  string checkpoint_dir = 1;
+}
+
 // StartRequest describes a sandbox start request.
 message StartRequest {
   // SandboxID is an optional caller-provided sandbox ID. sandboxd generates one when empty.
@@ -232,6 +240,8 @@ message StartRequest {
   // NetworkPolicy is the sandbox's initial packet and DNS policy. It can be
   // replaced while the sandbox is running with SetNetworkPolicy.
   NetworkPolicy network_policy = 20;
+  // CheckpointInfo restores the new sandbox from caller-owned runtime artifacts.
+  CheckpointInfo checkpoint_info = 21;
 }
 
 // StartResponse is returned after sandbox start.
@@ -243,6 +253,23 @@ message StartResponse {
   // ID is the unique sandbox ID.
   string id = 3;
 }
+
+// CheckpointRequest describes a synchronous checkpoint operation.
+message CheckpointRequest {
+  // ID is the source sandbox ID.
+  string id = 1;
+  // CheckpointDir is an absolute caller-owned output directory.
+  string checkpoint_dir = 2;
+  // TimeoutSeconds bounds the complete checkpoint operation and must be non-zero.
+  uint32 timeout_seconds = 3;
+  // Compress enables runtime-supported checkpoint compression.
+  bool compress = 4;
+  // LeaveRunning keeps the source sandbox running after a successful checkpoint.
+  bool leave_running = 5;
+}
+
+// CheckpointResponse is empty after the checkpoint artifact is complete.
+message CheckpointResponse {}
 
 // DeleteRequest describes a force-delete request.
 message DeleteRequest {

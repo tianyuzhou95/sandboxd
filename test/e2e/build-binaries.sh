@@ -30,10 +30,13 @@ CGO_ENABLED=0 GOWORK=off GOCACHE=/tmp/go-build \
     GOMODCACHE=/tmp/go-mod-official GOTOOLCHAIN=auto \
     go build -o output/network-policy-client \
     ./test/e2e/network-policy-client
+CGO_ENABLED=0 GOWORK=off GOCACHE=/tmp/go-build \
+    GOMODCACHE=/tmp/go-mod-official GOTOOLCHAIN=auto \
+    go build -o output/checkpoint-restore ./test/e2e/checkpoint-restore
 
 for binary in \
     sandboxd sbox runc-shim sandbox-logger firecracker-agent \
-    oom-hog network-policy-client; do
+    oom-hog network-policy-client checkpoint-restore; do
     [ -x "output/${binary}" ] || {
         printf '[runtime-binaries][error] output/%s is not executable\n' \
             "${binary}" >&2

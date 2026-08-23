@@ -34,6 +34,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	SandboxService_Start_FullMethodName                 = "/runtime.v1.SandboxService/Start"
+	SandboxService_Checkpoint_FullMethodName            = "/runtime.v1.SandboxService/Checkpoint"
 	SandboxService_Delete_FullMethodName                = "/runtime.v1.SandboxService/Delete"
 	SandboxService_Wait_FullMethodName                  = "/runtime.v1.SandboxService/Wait"
 	SandboxService_List_FullMethodName                  = "/runtime.v1.SandboxService/List"
@@ -50,6 +51,8 @@ const (
 type SandboxServiceClient interface {
 	// Start creates and starts a sandbox.
 	Start(ctx context.Context, in *StartRequest, opts ...grpc.CallOption) (*StartResponse, error)
+	// Checkpoint saves a running sandbox into a caller-owned directory.
+	Checkpoint(ctx context.Context, in *CheckpointRequest, opts ...grpc.CallOption) (*CheckpointResponse, error)
 	// Delete force-deletes a sandbox.
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
 	// Wait waits for a sandbox to exit.
@@ -76,6 +79,16 @@ func (c *sandboxServiceClient) Start(ctx context.Context, in *StartRequest, opts
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StartResponse)
 	err := c.cc.Invoke(ctx, SandboxService_Start_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sandboxServiceClient) Checkpoint(ctx context.Context, in *CheckpointRequest, opts ...grpc.CallOption) (*CheckpointResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CheckpointResponse)
+	err := c.cc.Invoke(ctx, SandboxService_Checkpoint_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +163,8 @@ func (c *sandboxServiceClient) SetNetworkPolicy(ctx context.Context, in *SetNetw
 type SandboxServiceServer interface {
 	// Start creates and starts a sandbox.
 	Start(context.Context, *StartRequest) (*StartResponse, error)
+	// Checkpoint saves a running sandbox into a caller-owned directory.
+	Checkpoint(context.Context, *CheckpointRequest) (*CheckpointResponse, error)
 	// Delete force-deletes a sandbox.
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
 	// Wait waits for a sandbox to exit.
@@ -174,6 +189,9 @@ type UnimplementedSandboxServiceServer struct{}
 
 func (UnimplementedSandboxServiceServer) Start(context.Context, *StartRequest) (*StartResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Start not implemented")
+}
+func (UnimplementedSandboxServiceServer) Checkpoint(context.Context, *CheckpointRequest) (*CheckpointResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Checkpoint not implemented")
 }
 func (UnimplementedSandboxServiceServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Delete not implemented")
@@ -228,6 +246,24 @@ func _SandboxService_Start_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SandboxServiceServer).Start(ctx, req.(*StartRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SandboxService_Checkpoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckpointRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxServiceServer).Checkpoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxService_Checkpoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxServiceServer).Checkpoint(ctx, req.(*CheckpointRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -350,6 +386,10 @@ var SandboxService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Start",
 			Handler:    _SandboxService_Start_Handler,
+		},
+		{
+			MethodName: "Checkpoint",
+			Handler:    _SandboxService_Checkpoint_Handler,
 		},
 		{
 			MethodName: "Delete",

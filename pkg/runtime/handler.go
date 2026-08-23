@@ -35,6 +35,20 @@ type Handler interface {
 	Wait(context.Context, string) (Exit, error)
 }
 
+// CheckpointHandler is an optional capability implemented by runtimes that
+// can save and restore caller-owned checkpoint artifacts.
+type CheckpointHandler interface {
+	Checkpoint(context.Context, CheckpointConfig) error
+	Restore(context.Context, StartConfig) error
+}
+
+type CheckpointConfig struct {
+	ID           string
+	Directory    string
+	Compress     bool
+	LeaveRunning bool
+}
+
 // StartRequestValidator rejects unsupported request sources before sandboxd
 // prepares images and runtime resources.
 type StartRequestValidator interface {
@@ -60,6 +74,7 @@ type StartConfig struct {
 	SpecUpdates             *SpecUpdates
 	WritableLayerLimitBytes uint64
 	EnableKVM               bool
+	CheckpointDir           string
 }
 
 // SpecUpdates contains provider-resolved OCI changes. Device providers use

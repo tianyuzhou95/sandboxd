@@ -97,6 +97,8 @@ type sandboxService struct {
 	recoveryReady atomic.Bool
 	deleteGroup   singleflight.Group
 	aclMu         sync.Mutex
+	checkpointMu  sync.Mutex
+	checkpointing map[string]struct{}
 }
 
 // loadRuntimeHandlers loads runtime handlers with exponential backoff.
@@ -207,7 +209,20 @@ func (h *sandboxService) startSandboxRuntime(
 		}
 	}
 
-	if err = handler.Start(ctx, startConfig); err != nil {
+	if startConfig.CheckpointDir != "" {
+		checkpointHandler, ok := handler.(svc.CheckpointHandler)
+		if !ok {
+			return errord.ToGRPCf(
+				errord.ErrNotImplemented,
+				"runtime %q does not support checkpoint restore",
+				runtimeName,
+			)
+		}
+		err = checkpointHandler.Restore(ctx, startConfig)
+	} else {
+		err = handler.Start(ctx, startConfig)
+	}
+	if err != nil {
 		logrus.WithField(trace.ContextKeyTraceId, traceID).Errorf("runtime handler create sandbox failed: %v", err)
 		h.sandboxManager.CleanSandboxRoot(startConfig.ID)
 		return errord.ToGRPC(err)
@@ -1037,6 +1052,16 @@ func (h *sandboxService) Start(ctx context.Context, request *runtime.StartReques
 		return &runtime.StartResponse{Code: -1, Message: err.Error()}, err
 	}
 	startReq := proto.Clone(request).(*runtime.StartRequest)
+	checkpointDir := ""
+	var err error
+	if startReq.CheckpointInfo != nil {
+		checkpointDir, err = validateCheckpointInputDirectory(
+			startReq.CheckpointInfo.CheckpointDir,
+		)
+		if err != nil {
+			return &runtime.StartResponse{Code: -1, Message: err.Error()}, errord.ToGRPC(err)
+		}
+	}
 	if startReq.Runtime == "" {
 		startReq.Runtime = config.RuntimeNameRunsc
 	}
@@ -1172,6 +1197,17 @@ func (h *sandboxService) Start(ctx context.Context, request *runtime.StartReques
 				return &runtime.StartResponse{Code: -1, Message: err.Error()},
 					errord.ToGRPC(fmt.Errorf("%v: %w", err, errord.ErrInvalidArgument))
 			}
+		}
+	}
+	if checkpointDir != "" {
+		handler, ok := h.serviceHandler.Get(startReq.Runtime)
+		if !ok {
+			return &runtime.StartResponse{Code: -1, Message: "runtime is unavailable"},
+				errord.ToGRPC(errord.ErrNotImplemented)
+		}
+		if _, ok := handler.(svc.CheckpointHandler); !ok {
+			return &runtime.StartResponse{Code: -1, Message: "runtime does not support checkpoint restore"},
+				errord.ToGRPC(errord.ErrNotImplemented)
 		}
 	}
 
@@ -1397,6 +1433,7 @@ func (h *sandboxService) Start(ctx context.Context, request *runtime.StartReques
 		SpecUpdates:             specUpdates,
 		WritableLayerLimitBytes: startReq.WritableLayerLimitBytes,
 		EnableKVM:               extraConfig.EnableKVM,
+		CheckpointDir:           checkpointDir,
 	}
 	if err := h.startSandboxRuntime(ctx, startReq.Runtime, runtimeConfig); err != nil {
 		return &runtime.StartResponse{

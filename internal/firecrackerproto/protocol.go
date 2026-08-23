@@ -39,13 +39,14 @@ var messageMagic = [4]byte{'A', 'K', 'F', 'C'}
 type MessageType uint16
 
 const (
-	MessageHealth    MessageType = 1
-	MessageConfigure MessageType = 2
-	MessageShutdown  MessageType = 3
-	MessageExec      MessageType = 4
-	MessageExecTTY   MessageType = 5
-	MessageWait      MessageType = 6
-	MessageResponse  MessageType = 100
+	MessageHealth     MessageType = 1
+	MessageConfigure  MessageType = 2
+	MessageShutdown   MessageType = 3
+	MessageExec       MessageType = 4
+	MessageExecTTY    MessageType = 5
+	MessageWait       MessageType = 6
+	MessageSetNetwork MessageType = 7
+	MessageResponse   MessageType = 100
 )
 
 type Response struct {

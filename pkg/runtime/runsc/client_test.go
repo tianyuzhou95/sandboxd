@@ -16,10 +16,12 @@ package runsc
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCreateUsesExactDebugLogPath(t *testing.T) {
@@ -156,5 +158,119 @@ func TestCreateUsesPerSandboxRootOverlay(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "--overlay2="+wantOverlay+"\n") {
 		t.Fatalf("runsc arguments %q do not contain per-sandbox overlay %q", string(data), wantOverlay)
+	}
+}
+
+func TestOpenPlatformDeviceForKVM(t *testing.T) {
+	devicePath := filepath.Join(t.TempDir(), "kvm")
+	if err := os.WriteFile(devicePath, []byte("device"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client := NewClientWithOptions("/usr/local/bin/runsc", t.TempDir(), Options{
+		Platform:           "kvm",
+		PlatformDevicePath: devicePath,
+	})
+
+	device, err := client.openPlatformDevice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device == nil {
+		t.Fatal("openPlatformDevice() returned nil for kvm")
+	}
+	defer device.Close()
+	if got := device.Name(); got != devicePath {
+		t.Fatalf("device path = %q, want %q", got, devicePath)
+	}
+}
+
+func TestOpenPlatformDeviceSkipsSystrap(t *testing.T) {
+	client := NewClientWithOptions("/usr/local/bin/runsc", t.TempDir(), Options{
+		Platform:           "systrap",
+		PlatformDevicePath: filepath.Join(t.TempDir(), "missing"),
+	})
+
+	device, err := client.openPlatformDevice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device != nil {
+		device.Close()
+		t.Fatal("openPlatformDevice() returned a device for systrap")
+	}
+}
+
+func TestCheckpointArguments(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		compress     bool
+		leaveRunning bool
+		compression  string
+	}{
+		{name: "raw-stop", compression: "none"},
+		{
+			name: "compressed-leave-running", compress: true,
+			leaveRunning: true, compression: "flate-best-speed",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			argsFile := filepath.Join(tempDir, "args")
+			binary := filepath.Join(tempDir, "runsc")
+			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$RUNSC_TEST_ARGS\"\n"
+			if err := os.WriteFile(binary, []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("RUNSC_TEST_ARGS", argsFile)
+			client := NewClient(binary, filepath.Join(tempDir, "root"))
+			if err := client.Checkpoint(
+				context.Background(),
+				"sbox-checkpoint",
+				filepath.Join(tempDir, "checkpoint"),
+				test.compress,
+				test.leaveRunning,
+			); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			arguments := string(data)
+			if !strings.Contains(
+				arguments,
+				"--compression="+test.compression+"\n",
+			) {
+				t.Fatalf("checkpoint arguments = %q", arguments)
+			}
+			hasLeaveRunning := strings.Contains(arguments, "--leave-running\n")
+			if hasLeaveRunning != test.leaveRunning {
+				t.Fatalf("leave-running argument = %v, want %v", hasLeaveRunning, test.leaveRunning)
+			}
+		})
+	}
+}
+
+func TestCheckpointCancellationTerminatesCommand(t *testing.T) {
+	tempDir := t.TempDir()
+	binary := filepath.Join(tempDir, "runsc")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexec sleep 30\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := NewClient(binary, filepath.Join(tempDir, "root")).Checkpoint(
+		ctx,
+		"sbox-checkpoint",
+		filepath.Join(tempDir, "checkpoint"),
+		true,
+		true,
+	)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("checkpoint error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("checkpoint cancellation took %s", elapsed)
 	}
 }

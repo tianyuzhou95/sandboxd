@@ -133,6 +133,13 @@ func handleConnection(connection *os.File) {
 			return
 		}
 		writeResponse(connection, configure(request))
+	case firecrackerproto.MessageSetNetwork:
+		var request firecrackerproto.NetworkSpec
+		if err := firecrackerproto.Decode(payload, &request); err != nil {
+			writeResponse(connection, err)
+			return
+		}
+		writeResponse(connection, reconfigureNetwork(request))
 	case firecrackerproto.MessageShutdown:
 		writeResponse(connection, nil)
 		go powerOff()
@@ -594,6 +601,16 @@ func prepareContainerFileUnder(root, target string) (string, error) {
 	return resolved, nil
 }
 
+func reconfigureNetwork(networkSpec firecrackerproto.NetworkSpec) error {
+	state.mu.RLock()
+	configured := state.configured
+	state.mu.RUnlock()
+	if !configured {
+		return errors.New("sandbox is not configured")
+	}
+	return configureNetwork(networkSpec)
+}
+
 func configureNetwork(networkSpec firecrackerproto.NetworkSpec) error {
 	name := networkSpec.Interface
 	if name == "" {
@@ -628,6 +645,20 @@ func configureNetwork(networkSpec firecrackerproto.NetworkSpec) error {
 	address, err := netlink.ParseAddr(fmt.Sprintf("%s/%d", ip, ones))
 	if err != nil {
 		return err
+	}
+	addresses, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	if err != nil {
+		return fmt.Errorf("list guest IPv4 addresses: %w", err)
+	}
+	for index := range addresses {
+		existing := addresses[index]
+		if err := netlink.AddrDel(link, &existing); err != nil {
+			return fmt.Errorf(
+				"remove old guest address %s: %w",
+				existing.String(),
+				err,
+			)
+		}
 	}
 	if err := netlink.AddrReplace(link, address); err != nil {
 		return fmt.Errorf("set guest address: %w", err)

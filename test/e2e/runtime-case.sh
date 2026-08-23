@@ -88,7 +88,7 @@ esac
 cd "${ROOT_DIR}"
 for binary in \
     sandboxd sbox runc-shim sandbox-logger firecracker-agent \
-    oom-hog network-policy-client; do
+    oom-hog network-policy-client checkpoint-restore; do
     [ -x "output/${binary}" ] ||
         fail "output/${binary} is missing; run make e2e-runtime-binaries first"
 done

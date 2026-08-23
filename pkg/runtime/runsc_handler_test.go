@@ -177,9 +177,15 @@ type successfulRunscClient struct{}
 
 func (successfulRunscClient) Create(context.Context, runscapi.StartArgs) error { return nil }
 func (successfulRunscClient) Start(context.Context, runscapi.StartArgs) error  { return nil }
-func (successfulRunscClient) Wait(context.Context, string) (int, error)        { return 0, nil }
-func (successfulRunscClient) Delete(context.Context, string, bool) error       { return nil }
-func (successfulRunscClient) ListJSON(context.Context) ([]byte, error)         { return []byte("[]"), nil }
+func (successfulRunscClient) Checkpoint(context.Context, string, string, bool, bool) error {
+	return nil
+}
+func (successfulRunscClient) Restore(context.Context, runscapi.StartArgs, string) error {
+	return nil
+}
+func (successfulRunscClient) Wait(context.Context, string) (int, error)  { return 0, nil }
+func (successfulRunscClient) Delete(context.Context, string, bool) error { return nil }
+func (successfulRunscClient) ListJSON(context.Context) ([]byte, error)   { return []byte("[]"), nil }
 
 func TestRunscHandlerResolvesWritableLayerOverlay(t *testing.T) {
 	rootDir := filepath.Join(t.TempDir(), "sandboxd", "root")

@@ -52,6 +52,7 @@ const (
 
 var (
 	_ Handler               = &FirecrackerHandler{}
+	_ CheckpointHandler     = &FirecrackerHandler{}
 	_ StartRequestValidator = &FirecrackerHandler{}
 )
 
@@ -70,12 +71,13 @@ type firecrackerPersistedState struct {
 }
 
 type firecrackerInstance struct {
-	mu       sync.RWMutex
-	state    firecrackerPersistedState
-	exit     Exit
-	done     chan struct{}
-	doneOnce sync.Once
-	deleting bool
+	mu          sync.RWMutex
+	state       firecrackerPersistedState
+	exit        Exit
+	done        chan struct{}
+	doneOnce    sync.Once
+	deleting    bool
+	operationMu sync.Mutex
 }
 
 func (instance *firecrackerInstance) snapshot() firecrackerPersistedState {
@@ -355,6 +357,13 @@ func (handler *FirecrackerHandler) Start(
 	if err := os.Mkdir(stateDir, 0700); err != nil {
 		return fmt.Errorf("create Firecracker state directory: %w", err)
 	}
+	overlayLink := filepath.Join(stateDir, firecrackerCheckpointOverlayName)
+	if err := os.Symlink(overlayPath, overlayLink); err != nil {
+		return fmt.Errorf(
+			"link Firecracker writable layer into runtime directory: %w",
+			err,
+		)
+	}
 	runtimeDir := handler.runtimeDirectory(startConfig.ID)
 	runtimeCreated := false
 	keepRuntimeArtifacts := false
@@ -406,6 +415,7 @@ func (handler *FirecrackerHandler) Start(
 		"--api-sock", apiPath,
 		"--id", startConfig.ID,
 	)
+	command.Dir = stateDir
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -460,7 +470,11 @@ func (handler *FirecrackerHandler) Start(
 	}
 	drives := []firecrackerDrive{
 		plan.rootDrive,
-		{ID: "overlay", Path: overlayPath, ReadOnly: false},
+		{
+			ID:       "overlay",
+			Path:     firecrackerCheckpointOverlayName,
+			ReadOnly: false,
+		},
 	}
 	drives = append(drives, plan.mountDrives...)
 	if err := configureFirecrackerVM(
@@ -575,6 +589,8 @@ func (handler *FirecrackerHandler) Delete(ctx context.Context, sandboxID string)
 		}
 		return err
 	}
+	instance.operationMu.Lock()
+	defer instance.operationMu.Unlock()
 	instance.markDeleting()
 	state := instance.snapshot()
 	if firecrackerProcessMatches(state.PID, handler.binary, state.APIPath, state.ID) {

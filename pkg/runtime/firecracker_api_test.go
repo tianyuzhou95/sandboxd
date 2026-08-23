@@ -106,7 +106,8 @@ func TestConfigureFirecrackerVM(t *testing.T) {
 		}
 	}
 	if payloads[1]["vcpu_count"] != float64(2) ||
-		payloads[1]["mem_size_mib"] != float64(256) {
+		payloads[1]["mem_size_mib"] != float64(256) ||
+		payloads[1]["track_dirty_pages"] != true {
 		t.Fatalf("machine config = %+v", payloads[1])
 	}
 	if payloads[2]["is_read_only"] != true ||
@@ -119,6 +120,101 @@ func TestConfigureFirecrackerVM(t *testing.T) {
 	}
 	if payloads[6]["action_type"] != "InstanceStart" {
 		t.Fatalf("start action = %+v", payloads[6])
+	}
+}
+
+func TestFirecrackerSnapshotAPI(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "api.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	type call struct {
+		method  string
+		path    string
+		payload map[string]any
+	}
+	var mu sync.Mutex
+	var calls []call
+	server := &http.Server{Handler: http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		defer request.Body.Close()
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode %s: %v", request.URL.Path, err)
+		}
+		mu.Lock()
+		calls = append(calls, call{
+			method: request.Method, path: request.URL.Path, payload: payload,
+		})
+		mu.Unlock()
+		writer.WriteHeader(http.StatusNoContent)
+	})}
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- server.Serve(listener) }()
+	defer func() {
+		_ = server.Close()
+		<-serverDone
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	api := newFirecrackerAPI(socket)
+	if err := api.pause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.createSnapshot(ctx, "/tmp/vmstate", "/tmp/memory"); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.loadSnapshot(
+		ctx,
+		"/tmp/vmstate",
+		"/tmp/memory",
+		"tap-restored",
+		"/run/firecracker/restored.vsock",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 4 {
+		t.Fatalf("snapshot API calls = %+v", calls)
+	}
+	if calls[0].method != http.MethodPatch || calls[0].path != "/vm" ||
+		calls[0].payload["state"] != "Paused" {
+		t.Fatalf("pause call = %+v", calls[0])
+	}
+	if calls[1].method != http.MethodPut ||
+		calls[1].path != "/snapshot/create" ||
+		calls[1].payload["snapshot_type"] != "Full" {
+		t.Fatalf("create snapshot call = %+v", calls[1])
+	}
+	if calls[2].method != http.MethodPatch ||
+		calls[2].payload["state"] != "Resumed" {
+		t.Fatalf("resume call = %+v", calls[2])
+	}
+	if calls[3].method != http.MethodPut ||
+		calls[3].path != "/snapshot/load" ||
+		calls[3].payload["resume_vm"] != true ||
+		calls[3].payload["track_dirty_pages"] != true {
+		t.Fatalf("load snapshot call = %+v", calls[3])
+	}
+	backends, ok := calls[3].payload["network_overrides"].([]any)
+	if !ok || len(backends) != 1 ||
+		backends[0].(map[string]any)["host_dev_name"] != "tap-restored" {
+		t.Fatalf("network overrides = %+v", calls[3].payload["network_overrides"])
+	}
+	vsock := calls[3].payload["vsock_override"].(map[string]any)
+	if vsock["uds_path"] != "/run/firecracker/restored.vsock" {
+		t.Fatalf("vsock override = %+v", vsock)
 	}
 }
 

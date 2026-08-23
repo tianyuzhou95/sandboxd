@@ -12,6 +12,7 @@ output/*
 !output/runc-shim
 !output/oom-hog
 !output/network-policy-client
+!output/checkpoint-restore
 !output/firecracker-agent
 !output/firecracker
 !output/firecracker-vmlinux
