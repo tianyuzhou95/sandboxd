@@ -227,7 +227,7 @@ preflight() {
     fi
 
     local bin
-    for bin in sandboxd sbox checkpoint-restore ip iptables busybox mkfs.erofs; do
+    for bin in sandboxd sbox checkpoint-restore ip ipset iptables ip6tables busybox mkfs.erofs; do
         command -v "${bin}" >/dev/null 2>&1 || fail "missing command: ${bin}"
     done
     case "${E2E_RUNTIME}" in

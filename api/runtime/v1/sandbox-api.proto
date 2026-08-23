@@ -76,6 +76,19 @@ message NetworkEndpoint {
   string address = 1;
   // Port is an exact TCP or UDP port. Zero matches any port.
   uint32 port = 2;
+  // Cidr is an IPv4 address or CIDR prefix in network policy schema v2.
+  string cidr = 3;
+  // Domain is an exact DNS name or a leading "*." suffix pattern in schema
+  // v2. Domain peers are valid only for egress rules.
+  string domain = 4;
+  // PortRange selects a contiguous remote TCP or UDP port range in schema v2.
+  PortRange port_range = 5;
+}
+
+// PortRange is an inclusive TCP or UDP port interval.
+message PortRange {
+  uint32 first = 1;
+  uint32 last  = 2;
 }
 
 // TrafficRule describes one ingress or egress packet rule.
@@ -88,13 +101,22 @@ message TrafficRule {
   // egress. Zero matches any sandbox port. An omitted peer matches any
   // remote address and port.
   uint32 sandbox_port = 5;
+  // SandboxPortRange selects an inclusive local port interval in schema v2.
+  PortRange sandbox_port_range = 6;
+  // Priority orders schema v2 rules. Higher values win and DENY wins a tie.
+  // Zero selects the default user priority of 100.
+  uint32 priority = 7;
 }
 
 // TrafficPolicy controls IPv4 packets crossing a sandbox's host endpoint.
 message TrafficPolicy {
+  // DefaultAction is the shared ingress and egress default in schema v1.
   NetworkPolicyAction default_action = 1;
   repeated TrafficRule rules         = 2;
   TrafficPolicyMode mode             = 3;
+  // IngressDefaultAction and EgressDefaultAction are required by schema v2.
+  NetworkPolicyAction ingress_default_action = 4;
+  NetworkPolicyAction egress_default_action  = 5;
 }
 
 // DNSRule matches either an exact DNS name or a leading "*." suffix pattern.
@@ -113,6 +135,10 @@ message DNSPolicy {
 message NetworkPolicy {
   TrafficPolicy traffic = 1;
   DNSPolicy dns         = 2;
+  // SchemaVersion is omitted for the legacy exact-address schema. Version 2
+  // enables CIDRs, domain peers, port ranges, priorities, and independent
+  // ingress and egress defaults.
+  uint32 schema_version = 3;
 }
 
 // SetNetworkPolicyRequest replaces a running sandbox's complete policy.

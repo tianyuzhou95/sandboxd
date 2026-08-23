@@ -36,7 +36,7 @@ func TestV010WireContract(t *testing.T) {
 	// Rolled for PR #30's RuntimeInfo message + checkpoint snapshot_type
 	// (field 6 of CheckpointRequest); both are wire-compatible additions.
 	// Recompute after any proto change: run this test, copy the got hash.
-	const want = "898bfeb6681af5aadbc949209199cea98746b25887bcd6b089ae0588447cee95"
+	const want = "7ed46c0121f537e972ff7f8524e24a5689401ec35e1707fc63e230efa42072b1"
 	if got := hex.EncodeToString(sum[:]); got != want {
 		t.Fatalf("sandbox API descriptor hash = %s, want %s", got, want)
 	}

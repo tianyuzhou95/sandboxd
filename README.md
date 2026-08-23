@@ -77,9 +77,10 @@ Select the backend with `plugin.network.nat_backend`. See the
 [bpfnat implementation notes](bpf/bpfnat/README.md) for its host prerequisites
 and build workflow.
 
-An optional per-sandbox ACL uses native netfilter with the `iptables` backend
-and TC eBPF with the `bpfnat` backend. Both support stateful IPv4 rules,
-fragments, and managed DNS policies. See
+An optional per-sandbox ACL uses native netfilter and ipset with the `iptables`
+backend and TC eBPF with the `bpfnat` backend. Both support prioritized
+stateful IPv4 CIDR, domain, protocol, and port rules, fragments, and managed
+DNS policies. See
 [the network ACL guide](doc/network-acl.md) for its API, host requirements,
 limitations, and recovery behavior.
 
