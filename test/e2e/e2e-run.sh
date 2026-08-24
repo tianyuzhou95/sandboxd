@@ -1691,7 +1691,20 @@ run_runsc_checks() {
         got="$(sbox_cmd exec "${SANDBOX_ID}" /bin/nproc)"
         assert_eq "${got}" "2" "runsc guest CPU count"
     fi
+    local terminate_status
+    # Terminating PID 1 races with runsc exec reporting the helper's exit.
+    # The helper may return normally or be terminated with the sandbox.
+    set +e
     sbox_cmd exec "${SANDBOX_ID}" /bin/kill -TERM 1
+    terminate_status=$?
+    set -e
+    case "${terminate_status}" in
+        0 | 137 | 143)
+            ;;
+        *)
+            fail "runsc init termination exec exited with ${terminate_status}"
+            ;;
+    esac
     wait_for_state "${SANDBOX_ID}" "SANDBOX_STATE_EXITED"
     assert_wait_log "${SANDBOX_ID}" false
     sbox_cmd delete "${SANDBOX_ID}"
