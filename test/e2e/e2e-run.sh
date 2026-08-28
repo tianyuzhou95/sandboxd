@@ -344,6 +344,7 @@ EOF
     fi
 
     local runtime_binaries
+    local node_resource_config=""
     case "${E2E_RUNTIME}" in
         all)
             runtime_binaries=$'runsc = "/usr/local/bin/runsc"\nrunc = "/usr/local/bin/runc"'
@@ -359,6 +360,7 @@ EOF
             ;;
         firecracker)
             runtime_binaries='firecracker = "/usr/local/bin/firecracker"'
+            node_resource_config=$'[plugin.node_resource]\nprovider = "cgroup"\nsock_path = "/run/sandboxd/resource.sock"'
             ;;
     esac
 
@@ -380,6 +382,8 @@ interface_cache_size = 1
 cgroup_root_name = "/${CGROUP_ROOT}"
 max_instance_num = 8
 pids_max = 64
+
+${node_resource_config}
 
 [plugin.runtime]
 image_lib_dir = "/e2e/images"
