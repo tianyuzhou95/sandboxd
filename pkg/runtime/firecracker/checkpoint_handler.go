@@ -374,8 +374,8 @@ func resolveRequestedSnapshotType(mode, requested string) (string, error) {
 
 // selectFirecrackerSnapshotTier resolves how the next generation is taken.
 // An empty request leaves the automatic three-tier choice to the recorded
-// lineage: Incremental after a restore, SoftDirty windows afterwards, Full
-// when the lineage is lost or the guest memory size is unknown. An explicit
+// lineage: Full establishes the first baseline, Incremental follows a restore,
+// and SoftDirty windows follow a successful checkpoint. An explicit
 // request pins the snapshot type: Full drops the lineage for one generation
 // (Firecracker writes the whole memory file itself, so the layout
 // preallocates nothing), Incremental demands the pagemap base only a
@@ -409,7 +409,7 @@ func selectFirecrackerSnapshotTier(
 		// Automatic tier selection.
 		snapshotType = firecrackerSnapshotTypeSoftDirty
 		layoutMemorySize = memorySize
-		if memorySize <= 0 || lineageLost {
+		if memorySize <= 0 || base == "" || lineageLost {
 			snapshotType = firecrackerSnapshotTypeFull
 			if memorySize > 0 {
 				layoutMemorySize = 0

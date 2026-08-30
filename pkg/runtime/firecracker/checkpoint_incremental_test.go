@@ -45,10 +45,10 @@ func TestSelectFirecrackerSnapshotTier(t *testing.T) {
 		wantErr         bool
 	}{
 		{
-			name:           "auto without base takes a first window",
+			name:           "auto without base establishes a Full baseline",
 			memorySize:     1 << 20,
-			wantType:       firecrackerSnapshotTypeSoftDirty,
-			wantLayoutSize: 1 << 20,
+			wantType:       firecrackerSnapshotTypeFull,
+			wantLayoutSize: 0,
 		},
 		{
 			name:            "auto with checkpoint base keeps soft-dirty windows",

@@ -799,13 +799,15 @@ run_checkpoint_restore_check() {
         if [ "${runtime}" = "firecracker" ] &&
             [ -s "${checkpoint_dir}/manifest.json" ]; then
             # Default (checkpoint_mode=full) keeps every generation Full;
-            # the incremental case expects the rolling chain shape.
-            if [ -n "${FIRECRACKER_CHECKPOINT_MODE}" ]; then
+            # the incremental case starts with a Full baseline and then
+            # expects SoftDirty rolling generations.
+            if [ -n "${FIRECRACKER_CHECKPOINT_MODE}" ] &&
+                [ "${checkpoint_index}" -gt 1 ]; then
                 assert_snapshot_type "${checkpoint_dir}" "SoftDirty" \
                     "${suffix} rolling checkpoint ${checkpoint_index}"
             else
                 assert_snapshot_type "${checkpoint_dir}" "Full" \
-                    "${suffix} default-mode checkpoint ${checkpoint_index}"
+                    "${suffix} baseline checkpoint ${checkpoint_index}"
             fi
         fi
 
