@@ -91,7 +91,7 @@ func TestInstantiateCheckpointV2RejectsTamperedArtifact(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "gen1")
 	artifact := sealV2ArtifactFixture(t, dir)
-	writeArtifactComponent(t, artifact.Files.Overlay, 16<<10)
+	writeArtifactComponent(t, artifact.Files.State, 16<<10)
 
 	_, _, err := instantiateFirecrackerCheckpoint(
 		context.Background(),
@@ -190,7 +190,7 @@ func sealV2ArtifactFixtureMemSize(t *testing.T, dir string, memorySize int64) fi
 	if err := finalizeFirecrackerCheckpointV2(context.Background(), files, &firecrackerCheckpointManifest{
 		SnapshotType: firecrackerSnapshotTypeSoftDirty,
 		MemorySize:   memorySize,
-	}, true); err != nil {
+	}); err != nil {
 		t.Fatalf("finalize v2 checkpoint: %v", err)
 	}
 	return files

@@ -169,14 +169,13 @@ func checkFirecrackerCheckpointDirVacant(dir string) error {
 }
 
 // finalizeFirecrackerCheckpointV2 seals a v2 checkpoint after Firecracker has
-// written its components: it records the component digests and lands the
-// manifest last as the logical commit marker. O_EXCL makes finalizing an
+// written its components: it records the small component digests and lands
+// the manifest last as the logical commit marker. O_EXCL makes finalizing an
 // already sealed directory an error.
 func finalizeFirecrackerCheckpointV2(
 	ctx context.Context,
 	files firecrackerCheckpointFiles,
 	manifest *firecrackerCheckpointManifest,
-	digestOverlay bool,
 ) (retErr error) {
 	manifest.Version = firecrackerCheckpointVersion2
 	manifest.CreatedAt = time.Now().UTC()
@@ -189,20 +188,14 @@ func finalizeFirecrackerCheckpointV2(
 		}
 		manifest.MemorySize = info.Size()
 	}
-	// Only the small components are digested: hashing guest memory costs
-	// seconds per GiB of pure CPU, which dwarfs every other step of an
-	// incremental checkpoint. The memory file's integrity rests on the
-	// reflink copy-on-write and Firecracker's own writes.
-	manifest.Digests = make(map[string]string, 2)
+	// Only the small state component is digested. Hashing guest memory or the
+	// writable overlay costs seconds per GiB of CPU and cache reads, which can
+	// dominate checkpoint latency. Their integrity rests on the local reflink
+	// copy-on-write and Firecracker's own writes.
+	manifest.Digests = make(map[string]string, 1)
 	for _, component := range firecrackerCheckpointComponents(files) {
-		if component.name == firecrackerCheckpointMemoryName {
-			continue
-		}
-		if component.name == firecrackerCheckpointOverlayName && !digestOverlay {
-			// Rolling generations skip the overlay digest too: hashing it
-			// costs ~5ms/MiB of CPU and re-reads it into the page cache on
-			// every generation. Full snapshots (template manufacture) keep
-			// digesting it.
+		if component.name == firecrackerCheckpointMemoryName ||
+			component.name == firecrackerCheckpointOverlayName {
 			continue
 		}
 		digest, err := digestFirecrackerCheckpointComponent(ctx, component.name, component.path)
