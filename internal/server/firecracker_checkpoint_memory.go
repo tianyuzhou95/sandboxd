@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"time"
 
 	runtime "github.com/inclusionAI/sandboxd/api/runtime/v1"
 	"github.com/inclusionAI/sandboxd/config"
@@ -28,8 +27,6 @@ import (
 )
 
 const minimumFirecrackerCheckpointHeadroom = int64(512 * 1024 * 1024)
-
-const firecrackerCheckpointCleanupTimeout = 20 * time.Second
 
 func firecrackerCheckpointReservationOwner(sandboxID string) string {
 	return "firecracker-checkpoint:" + sandboxID
@@ -149,44 +146,17 @@ func (h *sandboxService) withTransientFirecrackerCheckpointMemory(
 		}
 	}
 	operationErr := operation()
-	if err := h.cgroupMgr.Prepare(cgroupPath, normalResources); err == nil {
-		releaseReservation()
-		return operationErr
-	} else {
-		limitErr := fmt.Errorf("restore Firecracker cgroup memory limit: %w", err)
-		cleanupCtx, cancel := context.WithTimeout(
-			context.WithoutCancel(ctx),
-			firecrackerCheckpointCleanupTimeout,
-		)
-		deleteErr := handler.Delete(cleanupCtx, sandboxID)
-		cancel()
-		if deleteErr == nil {
-			releaseReservation()
-			return errors.Join(
-				operationErr,
-				limitErr,
-				fmt.Errorf(
-					"stopped Firecracker sandbox %s after cgroup rollback failure",
-					sandboxID,
-				),
-			)
-		}
-		return errors.Join(
-			operationErr,
-			limitErr,
-			fmt.Errorf(
-				"stop Firecracker sandbox %s after cgroup rollback failure: %w; node memory reservation retained",
-				sandboxID,
-				deleteErr,
-			),
-		)
-	}
+	// Keep the expanded host limit after the operation. Firecracker's guest
+	// memory remains fixed, while the extra cgroup space holds VMM overhead and
+	// reclaimable checkpoint page cache without risking a post-resume OOM.
+	releaseReservation()
+	return operationErr
 }
 
 // shouldRaiseFirecrackerCheckpointMemoryLimit recognizes both the normal
-// steady-state limit and the exact expanded limit a previous daemon may have
-// left behind. Any other live value is ambiguous, so checkpoint fails closed
-// rather than compounding transient headroom or overwriting an external change.
+// initial limit and the exact expanded limit retained after an earlier
+// checkpoint. Any other live value is ambiguous, so checkpoint fails closed
+// rather than compounding headroom or overwriting an external change.
 func shouldRaiseFirecrackerCheckpointMemoryLimit(
 	normalLimit int64,
 	expandedLimit int64,

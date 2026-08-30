@@ -85,6 +85,18 @@ after buffered writes, and sandboxd does not fsync the memory, state, overlay,
 manifest, or checkpoint directory. The Linux kernel may write dirty pages back
 later under its normal dirty-page policy.
 
+The host VMM cgroup must also accommodate those page-cache charges. Before a
+Firecracker checkpoint or restore, sandboxd reserves checkpoint headroom from
+the node resource provider and raises the VMM cgroup memory limit. It releases
+the transient reservation when the operation finishes, but retains the raised
+cgroup limit for the rest of the sandbox lifetime: lowering it while snapshot
+pages are still charged to the cgroup can OOM-kill a resumed source VM. This
+does not change the guest memory size, which remains fixed by the microVM
+configuration. Operators must nevertheless leave enough host capacity for the
+VMM overhead and reclaimable checkpoint page cache. A later checkpoint accepts
+the retained limit instead of compounding the headroom, and sandbox deletion
+removes the cgroup normally.
+
 A successful checkpoint therefore means the generation is logically complete
 and available for restore; it does **not** promise immediate power-loss
 durability. `close(2)` does not surface delayed writeback failures, so an abrupt

@@ -73,7 +73,7 @@ func TestShouldRaiseFirecrackerCheckpointMemoryLimit(t *testing.T) {
 		wantErr   bool
 	}{
 		{name: "normal", live: 320 << 20, wantRaise: true},
-		{name: "leftover expanded", live: 832 << 20},
+		{name: "retained expanded", live: 832 << 20},
 		{name: "unexpected", live: 576 << 20, wantErr: true},
 		{name: "unlimited or invalid", live: 0, wantErr: true},
 	}
