@@ -72,6 +72,17 @@ on disk. The default `checkpoint_mode = "full"` writes the complete memory
 file for every generation. Each generation is still a complete, independently
 restorable artifact; incremental mode affects only how much host work and disk
 space a generation costs.
+
+For the low-latency path, put the live Firecracker writable layer and the
+checkpoint root on the same native XFS filesystem with reflink enabled. A
+cross-filesystem or non-reflink layout falls back to copying large files. A
+`Full` baseline also dirties one guest-memory-sized file; an immediately
+following generation can make XFS wait for that file's background writeback
+before it can reflink the baseline. Normal periodic checkpointing lets that
+writeback drain between generations. Do not add an fsync to the checkpoint RPC
+to hide this cost, because that only moves the same wait into the guest pause
+path.
+
 Consecutive generations must use distinct `checkpoint_dir` values — sandboxd
 refuses to overwrite a directory that already holds a checkpoint. The
 incremental chain references the latest artifact's memory file directly, so a
@@ -85,17 +96,28 @@ after buffered writes, and sandboxd does not fsync the memory, state, overlay,
 manifest, or checkpoint directory. The Linux kernel may write dirty pages back
 later under its normal dirty-page policy.
 
-The host VMM cgroup must also accommodate those page-cache charges. Before a
-Firecracker checkpoint or restore, sandboxd reserves checkpoint headroom from
-the node resource provider and raises the VMM cgroup memory limit. It releases
-the transient reservation when the operation finishes, but retains the raised
-cgroup limit for the rest of the sandbox lifetime: lowering it while snapshot
-pages are still charged to the cgroup can OOM-kill a resumed source VM. This
-does not change the guest memory size, which remains fixed by the microVM
-configuration. Operators must nevertheless leave enough host capacity for the
-VMM overhead and reclaimable checkpoint page cache. A later checkpoint accepts
-the retained limit instead of compounding the headroom, and sandbox deletion
-removes the cgroup normally.
+On cgroup v2, sandboxd keeps snapshot page-cache charges out of the sandbox
+cgroup without changing its memory limit. A container's cgroup namespace root
+can still be a non-root domain cgroup in the host hierarchy, so moving a process
+there can fail the no-internal-process constraint. Instead, sandboxd creates a
+persistent, unbounded `sandboxd-firecracker-checkpoint` leaf directly below the
+namespace root. After pausing the guest and cloning the overlay, sandboxd moves
+the whole Firecracker process to that leaf only for the native snapshot request,
+moves it back to the original sandbox cgroup, and only then resumes the guest.
+Existing guest anonymous memory keeps its original sandbox charge while new
+snapshot page cache is charged to the shared leaf. The leaf accepts concurrent
+checkpoint writers and remains available across operations; its page cache is
+reclaimable under normal host memory pressure. If the move back fails, sandboxd
+leaves the guest paused and terminates the VMM rather than running workload
+threads outside the sandbox cgroup.
+
+Restore does not use that paused-snapshot window and still reserves transient
+node memory, raises the target VMM cgroup limit, and retains the raised limit
+for the sandbox lifetime. cgroup v1 and hybrid deployments also retain the
+headroom fallback for checkpoint. None of these host accounting choices
+changes the guest memory size, which remains fixed by the microVM
+configuration. Operators must leave enough host capacity for VMM overhead,
+restores, and reclaimable checkpoint page cache.
 
 A successful checkpoint therefore means the generation is logically complete
 and available for restore; it does **not** promise immediate power-loss
@@ -109,9 +131,10 @@ snapshot request: cloning first runs with a page cache that does not yet hold
 the snapshot's dirty writeback (an overlay clone after the snapshot was
 measured stalling for seconds behind that writeback). The clone deliberately
 carries no fsync because it can wait behind dirty writeback on the same
-filesystem. The pause window is therefore pause → overlay clone → snapshot
-writes → resume, with no fsync on the path. The manifest remains the logical
-commit point: a generation without a manifest is partial output.
+filesystem. On cgroup v2 the pause window is therefore pause → overlay clone →
+move VMM to the shared checkpoint leaf → snapshot writes → move VMM back →
+resume, with no fsync on the path. The manifest remains the logical commit
+point: a generation without a manifest is partial output.
 
 A sandboxd crash between resume and manifest publication discards the newest
 generation and restores from the previous one. This is sound because every
@@ -132,8 +155,8 @@ artifact; checkpoint success is reported only after the manifest is published.
   incremental snapshot API): an empty `snapshot_type` keeps the automatic
   tier selection (a pagemap `Incremental` generation against the memory file
   a restore loaded, `SoftDirty` windows against a previous checkpoint
-  afterwards, a `SoftDirty` first window on a sandbox that never
-  checkpointed). An explicit `Full` drops the lineage for one generation and
+  afterwards, and a `Full` baseline on a sandbox that never checkpointed).
+  An explicit `Full` drops the lineage for one generation and
   has Firecracker write the whole memory file. An explicit `Incremental`
   requires the restore-established pagemap base and fails otherwise. An
   explicit `SoftDirty` requires a usable base.
@@ -155,14 +178,11 @@ restart always marks the lineage lost for surviving sandboxes: the restart
 cannot tell which generation the surviving VMM is armed against, so the
 cheapest provably-safe recovery is one `Full` checkpoint per sandbox.
 
-The manifest digests the small components; hashing the memory file is skipped
-because it costs seconds of CPU per GiB and would dominate an otherwise
-sub-second incremental checkpoint. Full snapshots (template manufacture) also
-digest `overlay.ext4`; rolling incremental generations skip the overlay digest
-for the same reason — hashing it costs ~5ms/MiB of CPU and re-reads it into
-the page cache on every generation, and a rolling generation's integrity rests
-on the reflink copy-on-write and Firecracker's own writes. Restores skip
-components without a recorded digest either way. Digests are computed from the
+The manifest digests only the small VM state component. Hashing the memory file
+or `overlay.ext4` is skipped because it costs seconds of CPU and page-cache
+reads per GiB and would dominate checkpoint latency. Their local integrity
+rests on reflink copy-on-write and Firecracker's own writes. Restores skip
+components without a recorded digest. Digests are computed from the
 page-cache-visible contents before manifest publication, so the manifest
 attests the logical generation rather than stable-storage durability. On
 restore the verification is memoized per sandboxd process: a component whose
