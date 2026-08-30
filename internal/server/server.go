@@ -230,6 +230,7 @@ func (h *sandboxService) startSandboxRuntime(
 			startConfig.CgroupPath,
 			startConfig.Resources,
 			handler,
+			false,
 			func() error { return checkpointHandler.Restore(ctx, startConfig) },
 		)
 	} else {

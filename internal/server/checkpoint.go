@@ -123,10 +123,12 @@ func (h *sandboxService) Checkpoint(
 		cgroupPath,
 		resources,
 		handler,
+		true,
 		func() error {
 			return checkpointHandler.Checkpoint(checkpointCtx, svc.CheckpointConfig{
 				ID:           request.ID,
 				Directory:    directory.path,
+				CgroupPath:   cgroupPath,
 				Compress:     request.Compress,
 				LeaveRunning: request.LeaveRunning,
 				SnapshotType: request.SnapshotType,

@@ -217,21 +217,34 @@ func (handler *Handler) Checkpoint(
 		return fmt.Errorf("snapshot Firecracker writable layer for %s: %w", sandboxID, err)
 	}
 	tOverlay := time.Now()
-	if err := api.createSnapshot(
-		ctx, files.State, files.Memory, snapshotType,
-	); err != nil {
+	snapshotAttempted := false
+	snapshotErr := handler.withCheckpointSnapshotMemoryCharge(
+		config.CgroupPath,
+		instance,
+		state,
+		func() error {
+			snapshotAttempted = true
+			return api.createSnapshot(
+				ctx, files.State, files.Memory, snapshotType,
+			)
+		},
+	)
+	if snapshotErr != nil {
 		// The VMM disarms its ledger on write failures, but not on every
 		// failure shape (a request can fail after the memory write already
 		// acked and re-armed, e.g. in the state write). The lineage must be
 		// treated as lost either way: the previous base is no longer
 		// provably the one the ledger tracks. No in-pause retry — the next
 		// checkpoint takes a Full snapshot through the normal path.
-		instance.markBaseMemoryLineageLost()
+		if snapshotAttempted {
+			instance.markBaseMemoryLineageLost()
+		}
 		discardUnsealedFirecrackerCheckpoint(files)
 		// The deferred handoff cleanup above resumes the guest and sends
-		// the error outcome; an explicit resume here would race with it.
+		// the error outcome if the VMM survived; an explicit resume here
+		// would race with it.
 		return fmt.Errorf("create Firecracker %s snapshot for %s: %w",
-			snapshotType, sandboxID, err)
+			snapshotType, sandboxID, snapshotErr)
 	}
 	// The snapshot succeeded: files.Memory is now the complete guest memory
 	// image and the baseline the Firecracker ledger tracks.

@@ -119,6 +119,7 @@ func TestCheckpointForwardsRequest(t *testing.T) {
 	assert.Equal(t, svc.CheckpointConfig{
 		ID:           "sbox-checkpoint",
 		Directory:    directory,
+		CgroupPath:   "",
 		Compress:     true,
 		LeaveRunning: true,
 	}, handler.checkpoints[0])

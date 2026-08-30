@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/containerd/cgroups/v3"
 	runtime "github.com/inclusionAI/sandboxd/api/runtime/v1"
 	"github.com/inclusionAI/sandboxd/config"
 	svc "github.com/inclusionAI/sandboxd/pkg/runtime"
@@ -73,6 +74,7 @@ func (h *sandboxService) withTransientFirecrackerCheckpointMemory(
 	cgroupPath string,
 	guestResources *runtime.LinuxSandboxResources,
 	handler svc.Handler,
+	isCheckpoint bool,
 	operation func() error,
 ) error {
 	if runtimeName != config.RuntimeNameFirecracker {
@@ -83,6 +85,12 @@ func (h *sandboxService) withTransientFirecrackerCheckpointMemory(
 		return err
 	}
 	defer releaseSlot()
+
+	// On cgroup v2 the paused VMM is moved to an unbounded sibling cgroup only
+	// while Firecracker writes the snapshot, so checkpoint needs no limit change.
+	if isCheckpoint && cgroups.Mode() == cgroups.Unified {
+		return operation()
+	}
 
 	if h.cgroupMgr == nil || cgroupPath == "" {
 		return fmt.Errorf("Firecracker checkpoint requires a managed cgroup")

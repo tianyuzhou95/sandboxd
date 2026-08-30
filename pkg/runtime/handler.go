@@ -53,8 +53,11 @@ type CheckpointRestoreCapabilitiesProvider interface {
 }
 
 type CheckpointConfig struct {
-	ID           string
-	Directory    string
+	ID        string
+	Directory string
+	// CgroupPath is the runtime-owned source cgroup. It is internal runtime
+	// metadata rather than a public checkpoint option.
+	CgroupPath   string
 	Compress     bool
 	LeaveRunning bool
 	// SnapshotType requests a specific checkpoint flavor ("Full",
