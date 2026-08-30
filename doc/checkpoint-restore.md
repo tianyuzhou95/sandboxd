@@ -167,6 +167,88 @@ own stack and refuses on a mismatch, naming the conflicting field. Manifests
 without a tuple (artifacts from before the tuple existed) restore without
 stack verification.
 
+### Storage layout for high-performance Firecracker checkpoints
+
+Firecracker memory and the writable block image are separate checkpoint
+components. Firecracker writes or patches `memory`; sandboxd snapshots the
+live `overlay.ext4` into the artifact. Restore maps the artifact's `memory`
+file in place and clones `overlay.ext4` into a new sandbox-owned writable
+image. The artifact overlay must not be used as the restored VM's writable
+image: checkpoint generations are immutable, the source may keep running, and
+concurrent restores require independent writable layers.
+
+sandboxd uses `FICLONE` for these copies when possible:
+
+- the live writable image under
+  `plugin.runtime.filestore_dir/.firecracker` to the checkpoint overlay;
+- one checkpoint memory generation to the next incremental generation; and
+- the checkpoint overlay to the restored sandbox's writable image.
+
+All source and destination paths must therefore be on the **same
+reflink-capable filesystem** for the complete fast path. XFS with reflink
+enabled and Btrfs are supported examples. Sharing a block device is not
+sufficient if the paths are in different mounted filesystems: `FICLONE`
+returns `EXDEV` across filesystem boundaries. The caller should allocate
+`checkpoint_dir` below the same filesystem as `filestore_dir`, but outside
+the runtime-owned `.firecracker` directory. For example:
+
+```toml
+[plugin.runtime]
+filestore_dir = "/var/lib/sandboxd-storage/filestore"
+filestore_xfs_enabled = true
+filestore_dir_size = "200G"
+
+[plugin.runtime.firecracker]
+checkpoint_mode = "incremental"
+```
+
+The caller can then allocate checkpoint directories below a separately
+managed path such as
+`/var/lib/sandboxd-storage/filestore/checkpoints/<checkpoint-id>`. The
+checkpoint manager remains responsible for retention, quotas, and reserving
+enough capacity so artifacts cannot exhaust the writable-storage filestore.
+Do not place caller-owned artifacts below `.firecracker`, which sandboxd owns
+as live runtime state.
+
+Verify the deployed paths, not just the configuration text: check that the
+live overlay and checkpoint root report the same filesystem/device, and run a
+small `FICLONE` probe between them. A loop-mounted ext4 filestore and a
+checkpoint directory on the host filesystem do not qualify, even when both
+are backed by the same physical disk.
+
+If reflink is unavailable, sandboxd preserves correctness by falling back to
+a full file copy. That path is not a performance configuration. In
+particular, the current fallback is not sparse-extent-aware and may
+materialize holes in a sparse ext4 image, turning a cheap writable-layer
+snapshot into I/O and disk usage proportional to its virtual size. The
+restored writable image is live runtime state rather than a durable artifact,
+so neither the reflink nor fallback path fsyncs it before starting the VM.
+FICLONE or copy completion makes the contents available immediately; normal
+writeback handles persistence outside restore latency. Operators should treat
+an unexpected fallback as a deployment problem and monitor checkpoint
+latency and physical artifact usage for evidence of it.
+
+`checkpoint_mode = "incremental"` is the other half of the fast path. It
+allows later generations to reflink the previous memory image and patch only
+changed pages. A first checkpoint, an explicit `Full`, or recovery after
+lineage loss still writes all guest memory. Consequently, even a correctly
+configured reflink filesystem cannot make a Full memory snapshot independent
+of VM memory size or backing-device throughput.
+
+These performance settings do not change durability semantics. Checkpoint
+completion remains logical and does not fsync the artifact. A caller that
+needs power-loss durability or remote persistence must establish it after the
+checkpoint RPC, without adding archive, compression, hashing, or synchronous
+copy work back to sandboxd's pause path.
+
+The caller should also avoid synchronously fsyncing the checkpoint root as
+part of an otherwise local metadata commit. Firecracker uses
+`deferred_sync=true`; on filesystems with outstanding snapshot writes, a
+directory fsync immediately after renaming the staging directory can wait for
+that writeback and reintroduce a memory-size-dependent tail. Keep the rename
+and logical metadata commit on the request path, and perform any stronger
+durability work asynchronously or in the remote publication layer.
+
 ### Guest flush before pause
 
 Before pausing the source for a checkpoint, sandboxd asks the guest agent (over

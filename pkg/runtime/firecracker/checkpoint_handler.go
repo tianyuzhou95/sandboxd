@@ -617,7 +617,10 @@ func instantiateFirecrackerCheckpoint(
 		}
 		files.State = artifact.Files.State
 		files.Memory = artifact.Files.Memory
-		if _, err := cloneFile(artifact.Files.Overlay, files.Overlay); err != nil {
+		// The cloned overlay is a live runtime file, not a durable artifact.
+		// FICLONE makes it immediately usable by Firecracker; syncing here can
+		// force unrelated deferred checkpoint writeback onto restore latency.
+		if _, err := cloneFileNoSync(artifact.Files.Overlay, files.Overlay); err != nil {
 			return files, 0, fmt.Errorf("instantiate Firecracker writable layer: %w", err)
 		}
 		if err := checkRestoredMemorySize(artifact.Manifest.MemorySize); err != nil {
