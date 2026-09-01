@@ -30,6 +30,12 @@ When changing bpfnat behavior, extend the regular unit tests for pure parsing
 and policy logic and add or update the tagged integration tests for
 kernel-visible behavior and relevant boundary cases.
 
+# Markdown and GitHub Text Formatting
+
+Do not hard-wrap prose in Markdown documentation, GitHub pull request bodies, release descriptions, issue comments, or pull request review comments. Keep each paragraph and list item on a single logical line and let the renderer handle visual wrapping. Preserve line breaks that carry Markdown meaning, such as paragraph boundaries, lists, tables, blockquotes, and code blocks.
+
+Git commit message bodies are the exception and should remain wrapped at approximately 72 characters as required by the repository commit rules.
+
 # Runtime Artifact Pins
 
 `third_party/runtime-versions.env` is the single source of truth for runtime
