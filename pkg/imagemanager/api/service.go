@@ -16,6 +16,7 @@ package api
 
 import (
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/distillfs"
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/oci"
 )
 
@@ -29,6 +30,7 @@ type Service interface {
 	MountOSS(req *OSSMountRequest) (*MountInfo, error)
 	UmountOSS(req *OSSUmountRequest) error
 	MountOCI(req *OCIMountRequest) (*OCIMountResponse, error)
+	ImageProcess(imageURL string) (*imageconfig.Process, error)
 	UmountOCI(req *OCIUmountRequest) error
 	RootfsMaterialization(imageURL string) (*RootfsMaterialization, error)
 	MountNydus(req *NydusMountRequest) (*MountInfo, error)

@@ -14,7 +14,11 @@
 
 package api
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
+)
 
 type OSSMountRequest struct {
 	MountPoint      string `json:"mount_point,omitempty"`
@@ -40,15 +44,17 @@ func (req *OSSUmountRequest) String() string {
 }
 
 type MountInfo struct {
-	MountPoint string   `json:"mount_point"`
-	FilePath   string   `json:"file_path"`
-	Env        []string `json:"env,omitempty"`
+	MountPoint   string               `json:"mount_point"`
+	FilePath     string               `json:"file_path"`
+	Env          []string             `json:"env,omitempty"`
+	ImageProcess *imageconfig.Process `json:"image_process,omitempty"`
 }
 
 // OCIMountResponse is returned by the /oci_mount endpoint.
 type OCIMountResponse struct {
-	MountPath string   `json:"mount_path"`
-	Env       []string `json:"env,omitempty"`
+	MountPath    string               `json:"mount_path"`
+	Env          []string             `json:"env,omitempty"`
+	ImageProcess *imageconfig.Process `json:"image_process,omitempty"`
 }
 
 // RootfsMaterialization locates content-addressed, image-owned storage for a

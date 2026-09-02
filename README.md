@@ -6,6 +6,7 @@
 
 - Start, wait for, inspect, measure, and delete sandboxes.
 - Prepare local, OCI, Nydus, and S3-backed rootfs and mounts.
+- Extract and inject OCI image startup metadata for in-sandbox runtimes.
 - Allocate cgroups and pooled TAP or ephemeral veth endpoints, and configure iptables or eBPF for NAT.
 - Discover, validate, and lease scheduler-selected accelerator devices.
 
@@ -25,6 +26,8 @@ sandbox lifecycle manager
 The public protobuf contract is [api/runtime/v1/sandbox-api.proto](api/runtime/v1/sandbox-api.proto).
 Runtime isolation, host requirements, and lifecycle differences are summarized
 in [doc/runtime.md](doc/runtime.md).
+The inherited OCI startup contract is documented in
+[doc/image-process.md](doc/image-process.md).
 
 The `sbox` binary is an administrative CLI for managing sandboxes.
 

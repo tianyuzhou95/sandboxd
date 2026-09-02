@@ -17,10 +17,40 @@ package oci
 import (
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 )
+
+func TestMetadataStorePersistsImageProcess(t *testing.T) {
+	store, err := openMetadataStore(filepath.Join(t.TempDir(), "metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+	want := &imageconfig.Process{
+		Entrypoint: []string{"/entrypoint"},
+		Cmd:        []string{"serve"},
+		Cwd:        "/app",
+		User:       "1000:1000",
+	}
+	if err := store.putMount(&OciMountRecord{
+		ImageURL:     "registry.example/image:v1",
+		ImageProcess: want,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.getMount("registry.example/image:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(record.ImageProcess, want) {
+		t.Fatalf("image process = %#v, want %#v", record.ImageProcess, want)
+	}
+}
 
 func TestMetadataStore_LayerRefCountAtomicUpdates(t *testing.T) {
 	store, err := openMetadataStore(filepath.Join(t.TempDir(), "metadata.db"))

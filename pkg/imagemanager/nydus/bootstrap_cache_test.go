@@ -18,11 +18,17 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 )
+
+var testImageProcess = &imageconfig.Process{}
 
 func TestFetchAndExtractBootstrapReusesCachedBootstrap(t *testing.T) {
 	rootDir := t.TempDir()
@@ -37,7 +43,7 @@ func TestFetchAndExtractBootstrapReusesCachedBootstrap(t *testing.T) {
 		bootstrapCache: newBootstrapCache(),
 		fetchImageWithFallbackFn: func(context.Context, string, string) (v1.Image, error) {
 			proxyFetches++
-			return nil, nil
+			return empty.Image, nil
 		},
 		isNydusImageFn: func(v1.Image) (bool, error) {
 			return true, nil
@@ -55,7 +61,7 @@ func TestFetchAndExtractBootstrapReusesCachedBootstrap(t *testing.T) {
 		},
 	}
 
-	firstPath, _, err := client.FetchAndExtractBootstrap(context.Background(), imageURL, firstOutputDir, "http://proxy.local")
+	firstPath, _, _, err := client.FetchAndExtractBootstrapWithImageConfig(context.Background(), imageURL, firstOutputDir, "http://proxy.local")
 	if err != nil {
 		t.Fatalf("first FetchAndExtractBootstrap() error = %v", err)
 	}
@@ -63,7 +69,7 @@ func TestFetchAndExtractBootstrapReusesCachedBootstrap(t *testing.T) {
 	cachePath := filepath.Join(rootDir, bootstrapCacheDirName, bootstrapCacheKey(imageURL)+bootstrapCacheFileExt)
 	assertSameFile(t, firstPath, cachePath)
 
-	secondPath, _, err := client.FetchAndExtractBootstrap(context.Background(), imageURL, secondOutputDir, "http://proxy.local")
+	secondPath, _, _, err := client.FetchAndExtractBootstrapWithImageConfig(context.Background(), imageURL, secondOutputDir, "http://proxy.local")
 	if err != nil {
 		t.Fatalf("second FetchAndExtractBootstrap() error = %v", err)
 	}
@@ -96,18 +102,18 @@ func TestBootstrapCacheEvictsLeastRecentlyUsed(t *testing.T) {
 	thirdURL := "registry.example/test:third"
 
 	firstPath := writeBootstrapForTest(t, firstOutputDir, "first")
-	if err := cache.Store(firstURL, firstOutputDir, firstPath, nil); err != nil {
+	if err := cache.Store(firstURL, firstOutputDir, firstPath, nil, testImageProcess); err != nil {
 		t.Fatalf("Store(first) error = %v", err)
 	}
 
 	now = now.Add(time.Second)
 	secondPath := writeBootstrapForTest(t, secondOutputDir, "second")
-	if err := cache.Store(secondURL, secondOutputDir, secondPath, nil); err != nil {
+	if err := cache.Store(secondURL, secondOutputDir, secondPath, nil, testImageProcess); err != nil {
 		t.Fatalf("Store(second) error = %v", err)
 	}
 
 	now = now.Add(time.Second)
-	hitPath, _, hit, err := cache.Link(firstURL, hitOutputDir)
+	hitPath, _, _, hit, err := cache.Link(firstURL, hitOutputDir)
 	if err != nil {
 		t.Fatalf("Link(first) error = %v", err)
 	}
@@ -118,7 +124,7 @@ func TestBootstrapCacheEvictsLeastRecentlyUsed(t *testing.T) {
 
 	now = now.Add(time.Second)
 	thirdPath := writeBootstrapForTest(t, thirdOutputDir, "third")
-	if err := cache.Store(thirdURL, thirdOutputDir, thirdPath, nil); err != nil {
+	if err := cache.Store(thirdURL, thirdOutputDir, thirdPath, nil, testImageProcess); err != nil {
 		t.Fatalf("Store(third) error = %v", err)
 	}
 
@@ -146,15 +152,21 @@ func TestBootstrapCacheEnvSidecar(t *testing.T) {
 	outputDir2 := filepath.Join(rootDir, "daemon-2")
 
 	env := []string{"FOO=bar", "BAZ=qux"}
+	process := &imageconfig.Process{
+		Entrypoint: []string{"/entrypoint"},
+		Cmd:        []string{"serve"},
+		Cwd:        "/app",
+		User:       "1000:1000",
+	}
 
 	// Store with env
 	bsPath := writeBootstrapForTest(t, outputDir1, "bootstrap-data")
-	if err := cache.Store(imageURL, outputDir1, bsPath, env); err != nil {
+	if err := cache.Store(imageURL, outputDir1, bsPath, env, process); err != nil {
 		t.Fatalf("Store error = %v", err)
 	}
 
 	// Link should return cached env
-	_, cachedEnv, hit, err := cache.Link(imageURL, outputDir2)
+	_, cachedEnv, cachedProcess, hit, err := cache.Link(imageURL, outputDir2)
 	if err != nil {
 		t.Fatalf("Link error = %v", err)
 	}
@@ -163,6 +175,9 @@ func TestBootstrapCacheEnvSidecar(t *testing.T) {
 	}
 	if len(cachedEnv) != 2 || cachedEnv[0] != "FOO=bar" || cachedEnv[1] != "BAZ=qux" {
 		t.Fatalf("expected cached env [FOO=bar BAZ=qux], got %v", cachedEnv)
+	}
+	if !reflect.DeepEqual(cachedProcess, process) {
+		t.Fatalf("cached process = %#v, want %#v", cachedProcess, process)
 	}
 }
 
@@ -176,7 +191,7 @@ func TestBootstrapCacheEnvSidecar_OldEntryWithoutEnv(t *testing.T) {
 
 	// Simulate old cache entry: store bootstrap, then delete env sidecar
 	bsPath := writeBootstrapForTest(t, outputDir1, "old-bootstrap")
-	if err := cache.Store(imageURL, outputDir1, bsPath, []string{"OLD=val"}); err != nil {
+	if err := cache.Store(imageURL, outputDir1, bsPath, []string{"OLD=val"}, testImageProcess); err != nil {
 		t.Fatalf("Store error = %v", err)
 	}
 	key := bootstrapCacheKey(imageURL)
@@ -184,7 +199,7 @@ func TestBootstrapCacheEnvSidecar_OldEntryWithoutEnv(t *testing.T) {
 	os.Remove(envPath) // simulate old entry without sidecar
 
 	// Link should return nil env (not cached)
-	_, cachedEnv, hit, err := cache.Link(imageURL, outputDir2)
+	_, cachedEnv, _, hit, err := cache.Link(imageURL, outputDir2)
 	if err != nil {
 		t.Fatalf("Link error = %v", err)
 	}
@@ -206,12 +221,12 @@ func TestBootstrapCacheEnvSidecar_EmptyEnv(t *testing.T) {
 
 	// Store with nil env (image has no env vars)
 	bsPath := writeBootstrapForTest(t, outputDir1, "bootstrap-noenv")
-	if err := cache.Store(imageURL, outputDir1, bsPath, nil); err != nil {
+	if err := cache.Store(imageURL, outputDir1, bsPath, nil, testImageProcess); err != nil {
 		t.Fatalf("Store error = %v", err)
 	}
 
 	// Link should return non-nil empty slice (env was cached, just empty)
-	_, cachedEnv, hit, err := cache.Link(imageURL, outputDir2)
+	_, cachedEnv, _, hit, err := cache.Link(imageURL, outputDir2)
 	if err != nil {
 		t.Fatalf("Link error = %v", err)
 	}

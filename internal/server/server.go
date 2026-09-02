@@ -1158,6 +1158,21 @@ func (h *sandboxService) Start(ctx context.Context, request *runtime.StartReques
 		err := fmt.Errorf("rootfs is required")
 		return &runtime.StartResponse{Code: -1, Message: err.Error()}, err
 	}
+	if startReq.InjectEntrypoint != "" && startReq.Rootfs.GetType() != runtime.RootfsSrcType_IMAGE {
+		err := errors.New("inject_entrypoint requires an OCI or Nydus image rootfs")
+		return &runtime.StartResponse{Code: -1, Message: err.Error()},
+			errord.ToGRPC(fmt.Errorf("%v: %w", err, errord.ErrInvalidArgument))
+	}
+	if startReq.InjectEntrypoint != "" {
+		if err := validateImageProcessTarget(startReq.InjectEntrypoint); err != nil {
+			return &runtime.StartResponse{Code: -1, Message: err.Error()},
+				errord.ToGRPC(fmt.Errorf("%v: %w", err, errord.ErrInvalidArgument))
+		}
+		if err := validateImageProcessMounts(startReq.Mounts, startReq.InjectEntrypoint); err != nil {
+			return &runtime.StartResponse{Code: -1, Message: err.Error()},
+				errord.ToGRPC(fmt.Errorf("%v: %w", err, errord.ErrInvalidArgument))
+		}
+	}
 	if rootfsLimit := startReq.Rootfs.WritableLayerSizeBytes; rootfsLimit > 0 {
 		if startReq.WritableLayerLimitBytes > 0 && startReq.WritableLayerLimitBytes != rootfsLimit {
 			err := fmt.Errorf(
@@ -1472,6 +1487,23 @@ func (h *sandboxService) Start(ctx context.Context, request *runtime.StartReques
 			Value: v,
 		})
 	}
+	var imageProcess *imageProcessSpec
+	if startReq.InjectEntrypoint != "" {
+		resolvedImageProcess, resolveErr := preparedFilesystem.rootfs.RootFS.ResolveImageProcess()
+		if resolveErr != nil {
+			return &runtime.StartResponse{
+				Code:    -1,
+				Message: fmt.Sprintf("failed to resolve image process: %v", resolveErr),
+			}, resolveErr
+		}
+		imageProcess, err = buildImageProcessSpec(resolvedImageProcess)
+		if err != nil {
+			return &runtime.StartResponse{
+				Code:    -1,
+				Message: fmt.Sprintf("failed to prepare image process: %v", err),
+			}, err
+		}
+	}
 
 	annotations := copyStringMap(startReq.Labels)
 	if annotations == nil {
@@ -1520,6 +1552,8 @@ func (h *sandboxService) Start(ctx context.Context, request *runtime.StartReques
 		defaults,
 		preparedResources.network.Ip,
 		preparedFilesystem.Mounts(),
+		imageProcess,
+		startReq.InjectEntrypoint,
 	)
 	if err != nil {
 		return &runtime.StartResponse{

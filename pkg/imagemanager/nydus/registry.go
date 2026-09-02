@@ -28,6 +28,7 @@ import (
 	remoteTransport "github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/sirupsen/logrus"
 
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageregistry"
 )
 
@@ -89,14 +90,22 @@ func (c *RegistryClient) FetchImageWithFallback(ctx context.Context, imageRef st
 type bootstrapResult struct {
 	Path            string
 	Env             []string
+	ImageProcess    *imageconfig.Process
 	FetchDuration   time.Duration
 	CheckDuration   time.Duration
 	ExtractDuration time.Duration
 }
 
-// FetchAndExtractBootstrap fetches a Nydus image from registry and extracts bootstrap to outputDir.
-// It also extracts environment variables from the image config.
+// FetchAndExtractBootstrap fetches a Nydus image and returns its bootstrap and
+// environment, preserving the original API for existing callers.
 func (c *RegistryClient) FetchAndExtractBootstrap(ctx context.Context, imageURL string, outputDir string, proxyURL string) (string, []string, error) {
+	path, env, _, err := c.FetchAndExtractBootstrapWithImageConfig(ctx, imageURL, outputDir, proxyURL)
+	return path, env, err
+}
+
+// FetchAndExtractBootstrapWithImageConfig also returns process metadata from
+// the OCI image config.
+func (c *RegistryClient) FetchAndExtractBootstrapWithImageConfig(ctx context.Context, imageURL string, outputDir string, proxyURL string) (string, []string, *imageconfig.Process, error) {
 	timing, ctx := StartNydusTimedOperation(ctx, "nydus.FetchAndExtractBootstrap", imageURL)
 	defer timing.End()
 
@@ -106,32 +115,40 @@ func (c *RegistryClient) FetchAndExtractBootstrap(ctx context.Context, imageURL 
 	var lastAttemptErr error
 
 	stageStart := time.Now()
-	if cachePath, cachedEnv, hit, err := cache.Link(imageURL, outputDir); err != nil {
+	if cachePath, cachedEnv, cachedProcess, hit, err := cache.Link(imageURL, outputDir); err != nil {
 		logrus.WithError(err).Warnf("failed to reuse cached Nydus bootstrap for %s", imageURL)
 	} else if hit {
 		result.Path = cachePath
 		timing.Stage("bootstrap_cache_hit", time.Since(stageStart))
 
-		if cachedEnv != nil {
-			// Env was cached alongside bootstrap — no registry call needed.
-			return result.Path, cachedEnv, nil
+		if cachedEnv != nil && cachedProcess != nil {
+			// Image config was cached alongside bootstrap — no registry call needed.
+			return result.Path, cachedEnv, cachedProcess, nil
 		}
 
-		// Old cache entry without env sidecar — fall back to registry fetch.
+		// Old cache entry without complete image config — fall back to registry fetch.
 		var env []string
+		var process *imageconfig.Process
 		stageStart = time.Now()
 		if img, fetchErr := c.FetchImage(ctx, imageURL, "", false); fetchErr != nil {
 			logrus.WithError(fetchErr).Debugf("bootstrap cache hit but failed to fetch image config for env: %s", imageURL)
 		} else if img != nil {
 			if cfg, cfgErr := img.ConfigFile(); cfgErr == nil && cfg != nil {
 				env = cfg.Config.Env
+				process = imageconfig.FromOCI(cfg.Config)
 			} else if cfgErr != nil {
 				logrus.WithError(cfgErr).Debugf("bootstrap cache hit but failed to parse image config for env: %s", imageURL)
 			}
 		}
 		timing.Stage("fetch_env_on_cache_hit", time.Since(stageStart))
 
-		return result.Path, env, nil
+		if process == nil {
+			return "", nil, nil, fmt.Errorf("failed to resolve image config for %s", imageURL)
+		}
+		if cacheErr := cache.Store(imageURL, outputDir, result.Path, env, process); cacheErr != nil {
+			logrus.WithError(cacheErr).Warnf("failed to refresh Nydus image config cache for %s", imageURL)
+		}
+		return result.Path, env, process, nil
 	}
 
 	fetchAndExtract := func(useProxyFetch bool) (bootstrapResult, error) {
@@ -156,6 +173,7 @@ func (c *RegistryClient) FetchAndExtractBootstrap(ctx context.Context, imageURL 
 		if img != nil {
 			if cfg, cfgErr := img.ConfigFile(); cfgErr == nil && cfg != nil {
 				r.Env = cfg.Config.Env
+				r.ImageProcess = imageconfig.FromOCI(cfg.Config)
 				if len(r.Env) == 0 {
 					logrus.Debugf("image config has no env vars: %s", imageURL)
 				}
@@ -219,10 +237,15 @@ func (c *RegistryClient) FetchAndExtractBootstrap(ctx context.Context, imageURL 
 
 	if err != nil {
 		timing.Fail(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 
-	if cacheErr := cache.Store(imageURL, outputDir, result.Path, result.Env); cacheErr != nil {
+	if result.ImageProcess == nil {
+		err := fmt.Errorf("failed to resolve image config for %s", imageURL)
+		timing.Fail(err)
+		return "", nil, nil, err
+	}
+	if cacheErr := cache.Store(imageURL, outputDir, result.Path, result.Env, result.ImageProcess); cacheErr != nil {
 		logrus.WithError(cacheErr).Warnf("failed to cache Nydus bootstrap for %s", imageURL)
 	}
 
@@ -230,7 +253,7 @@ func (c *RegistryClient) FetchAndExtractBootstrap(ctx context.Context, imageURL 
 	timing.Stage("check_nydus_format", result.CheckDuration)
 	timing.Stage("extract_bootstrap", result.ExtractDuration)
 
-	return result.Path, result.Env, nil
+	return result.Path, result.Env, imageconfig.Clone(result.ImageProcess), nil
 }
 
 func shouldRetryNydusFetch(err error) bool {

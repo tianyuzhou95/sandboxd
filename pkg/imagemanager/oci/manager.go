@@ -39,6 +39,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/diskusage"
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageregistry"
 )
 
@@ -127,13 +128,15 @@ type imageLockEntry struct {
 
 // ContainerInfo stores mount-related information.
 type ContainerInfo struct {
-	MountID      string
-	ImageURL     string
-	MountPath    string
-	LayerDigests []string
-	ChainIDs     []string
-	LowerDirs    []string
-	Env          []string
+	MountID       string
+	ImageURL      string
+	MountPath     string
+	LayerDigests  []string
+	ChainIDs      []string
+	LowerDirs     []string
+	Env           []string
+	ImageProcess  *imageconfig.Process
+	CreatedAtUnix int64
 }
 
 // NewManager creates a new OCI manager.
@@ -295,7 +298,14 @@ func (m *Manager) MountImage(imageURL string) (string, []string, error) {
 
 // MountImageWithContext pulls and extracts OCI layers, then mounts a readonly overlay rootfs.
 // Returns the mount path, environment variables from the image config, and any error.
-func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (mountPath string, envVars []string, retErr error) {
+func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (string, []string, error) {
+	mountPath, envVars, _, err := m.MountImageConfigWithContext(ctx, imageURL)
+	return mountPath, envVars, err
+}
+
+// MountImageConfigWithContext is MountImageWithContext plus the OCI process
+// metadata needed for inherited image startup.
+func (m *Manager) MountImageConfigWithContext(ctx context.Context, imageURL string) (mountPath string, envVars []string, imageProcess *imageconfig.Process, retErr error) {
 	timing, ctx := StartOCITimedOperation(ctx, "oci.MountImage", imageURL)
 	defer timing.End()
 	opStart := time.Now()
@@ -310,7 +320,7 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 	if imageURL == "" {
 		err := fmt.Errorf("imageURL is required")
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	timing.Stage("validate_request", time.Since(stageStart))
 
@@ -333,24 +343,26 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 	if info := m.getContainer(imageURL); info != nil {
 		timing.Stage("reuse_in_memory_mount", time.Since(stageStart))
 		logrus.Infof("OCI mount reuse in-memory: image=%s mount_path=%s cost=%s", imageURL, info.MountPath, time.Since(opStart))
-		return info.MountPath, info.Env, nil
+		return info.MountPath, info.Env, imageconfig.Clone(info.ImageProcess), nil
 	}
 
 	// Reuse mounted state restored from BoltDB after restart.
 	if rec, err := m.store.getMount(imageURL); err == nil && rec != nil {
 		info := &ContainerInfo{
-			MountID:      rec.MountID,
-			ImageURL:     rec.ImageURL,
-			MountPath:    rec.MountPath,
-			LayerDigests: append([]string(nil), rec.LayerDigests...),
-			ChainIDs:     append([]string(nil), rec.ChainIDs...),
-			LowerDirs:    append([]string(nil), rec.LowerDirs...),
-			Env:          append([]string(nil), rec.Env...),
+			MountID:       rec.MountID,
+			ImageURL:      rec.ImageURL,
+			MountPath:     rec.MountPath,
+			LayerDigests:  append([]string(nil), rec.LayerDigests...),
+			ChainIDs:      append([]string(nil), rec.ChainIDs...),
+			LowerDirs:     append([]string(nil), rec.LowerDirs...),
+			Env:           append([]string(nil), rec.Env...),
+			ImageProcess:  imageconfig.Clone(rec.ImageProcess),
+			CreatedAtUnix: rec.CreatedAtUnix,
 		}
 		m.setContainer(imageURL, info)
 		timing.Stage("reuse_persisted_mount", time.Since(stageStart))
 		logrus.Infof("OCI mount reuse persisted: image=%s mount_path=%s cost=%s", imageURL, rec.MountPath, time.Since(opStart))
-		return rec.MountPath, rec.Env, nil
+		return rec.MountPath, rec.Env, imageconfig.Clone(info.ImageProcess), nil
 	}
 	timing.Stage("check_existing_mount", time.Since(stageStart))
 
@@ -362,18 +374,20 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 	img, err := m.fetchImage(ctx, imageURL)
 	if err != nil {
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	timing.Stage("fetch_image", time.Since(stageStart))
 
-	// Extract environment variables from image config
+	// Extract environment variables and process metadata from image config.
 	if cfg, cfgErr := img.ConfigFile(); cfgErr == nil && cfg != nil {
 		envVars = cfg.Config.Env
+		imageProcess = imageconfig.FromOCI(cfg.Config)
 		if len(envVars) == 0 {
 			logrus.Debugf("image config has no env vars: %s", imageURL)
 		}
 	} else if cfgErr != nil {
 		logrus.Warnf("failed to read image config for env extraction: %s: %v", imageURL, cfgErr)
+		return "", nil, nil, fmt.Errorf("failed to read image config for %s: %w", imageURL, cfgErr)
 	}
 
 	stageStart = time.Now()
@@ -381,12 +395,12 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 	if err != nil {
 		err = fmt.Errorf("failed to get image layers for %s: %w", imageURL, err)
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if len(layers) == 0 {
 		err = fmt.Errorf("image %s has no layers", imageURL)
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	timing.Stage("list_layers", time.Since(stageStart))
 	logrus.Infof("OCI mount fetched manifest: image=%s layer_count=%d", imageURL, len(layers))
@@ -395,12 +409,12 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 	diffIDs, err := resolveImageLayerDiffIDs(img, layers)
 	if err != nil {
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	chainIDs, err := buildChainIDs(diffIDs)
 	if err != nil {
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	timing.Stage("build_chain_ids", time.Since(stageStart))
 
@@ -408,7 +422,7 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 	layerDigests, layerPaths, err := m.extractLayersWithWorkers(ctx, layers)
 	if err != nil {
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	timing.Stage("extract_layers", time.Since(stageStart))
 	reservedDigests = append(reservedDigests, layerDigests...)
@@ -417,7 +431,7 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 	chainPaths, err := m.ensureChainLowerDirs(chainIDs, layerPaths)
 	if err != nil {
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	timing.Stage("prepare_lowerdirs", time.Since(stageStart))
 	reservedChainIDs = append(reservedChainIDs, chainIDs...)
@@ -437,7 +451,7 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 	if err := m.store.putMountTxn(txn); err != nil {
 		err = fmt.Errorf("failed to persist mount transaction for %s: %w", imageURL, err)
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	timing.Stage("persist_mount_txn", time.Since(stageStart))
 
@@ -445,13 +459,13 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 	if err := os.MkdirAll(mountPath, 0755); err != nil {
 		err = fmt.Errorf("failed to create mount path %s: %w", mountPath, err)
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 
 	if err := m.mountFn(mountPath, lowerDirs); err != nil {
 		err = fmt.Errorf("failed to mount overlay rootfs for %s: %w", imageURL, err)
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	timing.Stage("overlay_mount", time.Since(stageStart))
 
@@ -463,13 +477,14 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 		ChainIDs:      append([]string(nil), chainIDs...),
 		LowerDirs:     append([]string(nil), lowerDirs...),
 		Env:           append([]string(nil), envVars...),
+		ImageProcess:  imageconfig.Clone(imageProcess),
 		CreatedAtUnix: m.now().Unix(),
 	}
 	stageStart = time.Now()
 	if err := m.store.putMount(record); err != nil {
 		err = fmt.Errorf("failed to persist oci mount metadata: %w", err)
 		timing.RecordError(err)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if err := m.store.deleteMountTxn(imageURL); err != nil {
 		logrus.Warnf("failed to finalize mount transaction for %s: %v", imageURL, err)
@@ -477,18 +492,89 @@ func (m *Manager) MountImageWithContext(ctx context.Context, imageURL string) (m
 	timing.Stage("persist_mount_record", time.Since(stageStart))
 
 	m.setContainer(imageURL, &ContainerInfo{
-		MountID:      mountID,
-		ImageURL:     imageURL,
-		MountPath:    mountPath,
-		LayerDigests: append([]string(nil), layerDigests...),
-		ChainIDs:     append([]string(nil), chainIDs...),
-		LowerDirs:    append([]string(nil), lowerDirs...),
-		Env:          append([]string(nil), envVars...),
+		MountID:       mountID,
+		ImageURL:      imageURL,
+		MountPath:     mountPath,
+		LayerDigests:  append([]string(nil), layerDigests...),
+		ChainIDs:      append([]string(nil), chainIDs...),
+		LowerDirs:     append([]string(nil), lowerDirs...),
+		Env:           append([]string(nil), envVars...),
+		ImageProcess:  imageconfig.Clone(imageProcess),
+		CreatedAtUnix: record.CreatedAtUnix,
 	})
 	rollbackResources = false
 	logrus.Infof("OCI mount success: image=%s mount_id=%s mount_path=%s layers=%d cost=%s", imageURL, mountID, mountPath, len(layerDigests), time.Since(opStart))
 
-	return mountPath, envVars, nil
+	return mountPath, envVars, imageconfig.Clone(imageProcess), nil
+}
+
+// ImageProcessWithContext returns process metadata for a mounted image. Mount
+// records created before process metadata was introduced are upgraded lazily,
+// so ordinary cached mounts remain usable without registry access.
+func (m *Manager) ImageProcessWithContext(ctx context.Context, imageURL string) (*imageconfig.Process, error) {
+	if imageURL == "" {
+		return nil, fmt.Errorf("imageURL is required")
+	}
+	unlockImage := m.acquireImageLock(imageURL)
+	defer unlockImage()
+
+	info := m.getContainer(imageURL)
+	if info == nil {
+		rec, err := m.store.getMount(imageURL)
+		if err != nil {
+			return nil, fmt.Errorf("read OCI mount metadata for %s: %w", imageURL, err)
+		}
+		if rec == nil {
+			return nil, fmt.Errorf("OCI image %s is not mounted", imageURL)
+		}
+		info = &ContainerInfo{
+			MountID:       rec.MountID,
+			ImageURL:      rec.ImageURL,
+			MountPath:     rec.MountPath,
+			LayerDigests:  append([]string(nil), rec.LayerDigests...),
+			ChainIDs:      append([]string(nil), rec.ChainIDs...),
+			LowerDirs:     append([]string(nil), rec.LowerDirs...),
+			Env:           append([]string(nil), rec.Env...),
+			ImageProcess:  imageconfig.Clone(rec.ImageProcess),
+			CreatedAtUnix: rec.CreatedAtUnix,
+		}
+		m.setContainer(imageURL, info)
+	}
+	if info.ImageProcess != nil {
+		return imageconfig.Clone(info.ImageProcess), nil
+	}
+
+	img, err := m.fetchImage(ctx, imageURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read image config for %s: %w", imageURL, err)
+	}
+	info.ImageProcess = imageconfig.FromOCI(cfg.Config)
+	if err := m.persistContainer(info); err != nil {
+		return nil, fmt.Errorf("persist image process config for %s: %w", imageURL, err)
+	}
+	return imageconfig.Clone(info.ImageProcess), nil
+}
+
+func (m *Manager) persistContainer(info *ContainerInfo) error {
+	createdAtUnix := info.CreatedAtUnix
+	if createdAtUnix == 0 {
+		createdAtUnix = m.now().Unix()
+	}
+	return m.store.putMount(&OciMountRecord{
+		ImageURL:      info.ImageURL,
+		MountID:       info.MountID,
+		MountPath:     info.MountPath,
+		LayerDigests:  append([]string(nil), info.LayerDigests...),
+		ChainIDs:      append([]string(nil), info.ChainIDs...),
+		LowerDirs:     append([]string(nil), info.LowerDirs...),
+		Env:           append([]string(nil), info.Env...),
+		ImageProcess:  imageconfig.Clone(info.ImageProcess),
+		CreatedAtUnix: createdAtUnix,
+	})
 }
 
 type layerExtractJob struct {

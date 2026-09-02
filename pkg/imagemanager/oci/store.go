@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -55,14 +56,15 @@ type ChainRecord struct {
 
 // OciMountRecord stores mounted OCI image metadata.
 type OciMountRecord struct {
-	ImageURL      string   `json:"image_url"`
-	MountID       string   `json:"mount_id"`
-	MountPath     string   `json:"mount_path"`
-	LayerDigests  []string `json:"layer_digests"`
-	ChainIDs      []string `json:"chain_ids,omitempty"`
-	LowerDirs     []string `json:"lower_dirs"`
-	Env           []string `json:"env,omitempty"`
-	CreatedAtUnix int64    `json:"created_at_unix"`
+	ImageURL      string               `json:"image_url"`
+	MountID       string               `json:"mount_id"`
+	MountPath     string               `json:"mount_path"`
+	LayerDigests  []string             `json:"layer_digests"`
+	ChainIDs      []string             `json:"chain_ids,omitempty"`
+	LowerDirs     []string             `json:"lower_dirs"`
+	Env           []string             `json:"env,omitempty"`
+	ImageProcess  *imageconfig.Process `json:"image_process,omitempty"`
+	CreatedAtUnix int64                `json:"created_at_unix"`
 }
 
 // OciMountTxnRecord stores in-progress mount transaction metadata.

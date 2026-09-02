@@ -1408,8 +1408,13 @@ type StartRequest struct {
 	NetworkPolicy *NetworkPolicy `protobuf:"bytes,20,opt,name=network_policy,json=networkPolicy,proto3" json:"network_policy,omitempty"`
 	// CheckpointInfo restores the new sandbox from caller-owned runtime artifacts.
 	CheckpointInfo *CheckpointInfo `protobuf:"bytes,21,opt,name=checkpoint_info,json=checkpointInfo,proto3" json:"checkpoint_info,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// InjectEntrypoint is the absolute in-sandbox path where sandboxd injects
+	// the effective Entrypoint/Cmd configuration from an OCI or Nydus image
+	// rootfs. Empty disables injection. It does not replace the sandbox's own
+	// command.
+	InjectEntrypoint string `protobuf:"bytes,22,opt,name=inject_entrypoint,json=injectEntrypoint,proto3" json:"inject_entrypoint,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *StartRequest) Reset() {
@@ -1587,6 +1592,13 @@ func (x *StartRequest) GetCheckpointInfo() *CheckpointInfo {
 		return x.CheckpointInfo
 	}
 	return nil
+}
+
+func (x *StartRequest) GetInjectEntrypoint() string {
+	if x != nil {
+		return x.InjectEntrypoint
+	}
+	return ""
 }
 
 // StartResponse is returned after sandbox start.
@@ -3012,7 +3024,7 @@ const file_api_runtime_v1_sandbox_api_proto_rawDesc = "" +
 	"\n" +
 	"device_ids\x18\x02 \x03(\rR\tdeviceIds\"7\n" +
 	"\x0eCheckpointInfo\x12%\n" +
-	"\x0echeckpoint_dir\x18\x01 \x01(\tR\rcheckpointDir\"\x98\t\n" +
+	"\x0echeckpoint_dir\x18\x01 \x01(\tR\rcheckpointDir\"\xc5\t\n" +
 	"\fStartRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x1f\n" +
@@ -3037,7 +3049,8 @@ const file_api_runtime_v1_sandbox_api_proto_rawDesc = "" +
 	"\x0fxpu_allocations\x18\x12 \x03(\v2\x19.runtime.v1.XpuAllocationR\x0expuAllocations\x12;\n" +
 	"\x1awritable_layer_limit_bytes\x18\x13 \x01(\x04R\x17writableLayerLimitBytes\x12@\n" +
 	"\x0enetwork_policy\x18\x14 \x01(\v2\x19.runtime.v1.NetworkPolicyR\rnetworkPolicy\x12C\n" +
-	"\x0fcheckpoint_info\x18\x15 \x01(\v2\x1a.runtime.v1.CheckpointInfoR\x0echeckpointInfo\x1a7\n" +
+	"\x0fcheckpoint_info\x18\x15 \x01(\v2\x1a.runtime.v1.CheckpointInfoR\x0echeckpointInfo\x12+\n" +
+	"\x11inject_entrypoint\x18\x16 \x01(\tR\x10injectEntrypoint\x1a7\n" +
 	"\tEnvsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a<\n" +

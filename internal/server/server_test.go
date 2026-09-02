@@ -203,6 +203,56 @@ func TestStartRejectsWritableLayerLimitForKata(t *testing.T) {
 	assert.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
+func TestStartRejectsInjectEntrypointForNonImageRootfs(t *testing.T) {
+	s := newTestService(t, map[string]svc.Handler{
+		config.RuntimeNameRunsc: svc.NewFakeRuntimeHandler(),
+	})
+	response, err := s.Start(context.Background(), &runtime.StartRequest{
+		Runtime:          config.RuntimeNameRunsc,
+		Rootfs:           &runtime.RootfsConfig{Type: runtime.RootfsSrcType_LOCAL},
+		InjectEntrypoint: "/run/yuanrong/image-process.json",
+	})
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	assert.Contains(t, response.Message, "requires an OCI or Nydus image rootfs")
+}
+
+func TestStartRejectsInvalidInjectEntrypointPath(t *testing.T) {
+	s := newTestService(t, map[string]svc.Handler{
+		config.RuntimeNameRunsc: svc.NewFakeRuntimeHandler(),
+	})
+	response, err := s.Start(context.Background(), &runtime.StartRequest{
+		Runtime: config.RuntimeNameRunsc,
+		Rootfs: &runtime.RootfsConfig{
+			Type: runtime.RootfsSrcType_IMAGE,
+			Source: &runtime.RootfsConfig_ImageUrl{
+				ImageUrl: "example.invalid/rootfs:latest",
+			},
+		},
+		InjectEntrypoint: "relative.json",
+	})
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	assert.Contains(t, response.Message, "must be absolute")
+}
+
+func TestStartRejectsImageProcessMountConflict(t *testing.T) {
+	s := newTestService(t, map[string]svc.Handler{
+		config.RuntimeNameRunsc: svc.NewFakeRuntimeHandler(),
+	})
+	response, err := s.Start(context.Background(), &runtime.StartRequest{
+		Runtime: config.RuntimeNameRunsc,
+		Rootfs: &runtime.RootfsConfig{
+			Type: runtime.RootfsSrcType_IMAGE,
+			Source: &runtime.RootfsConfig_ImageUrl{
+				ImageUrl: "example.invalid/rootfs:latest",
+			},
+		},
+		InjectEntrypoint: "/run/yuanrong/image-process.json",
+		Mounts:           []*runtime.Mount{{Target: "/run"}},
+	})
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	assert.Contains(t, response.Message, "conflicts with managed image process config")
+}
+
 func TestStartRejectsWritableLayerLimitForRunc(t *testing.T) {
 	s := newTestService(t, map[string]svc.Handler{
 		config.RuntimeNameRunc: svc.NewFakeRuntimeHandler(),

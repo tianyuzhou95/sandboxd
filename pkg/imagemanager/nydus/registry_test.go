@@ -24,6 +24,7 @@ import (
 	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
 	remoteTransport "github.com/google/go-containerregistry/pkg/v1/remote/transport"
 )
 
@@ -44,14 +45,14 @@ func TestFetchAndExtractBootstrapFallsBackToDirectFetchAfterProxyRetries(t *test
 	client := &RegistryClient{
 		fetchImageWithFallbackFn: func(context.Context, string, string) (v1.Image, error) {
 			proxyFetches++
-			return nil, nil
+			return empty.Image, nil
 		},
 		fetchImageFn: func(_ context.Context, _ string, proxyURL string, useHTTP bool) (v1.Image, error) {
 			if proxyURL != "" || useHTTP {
 				t.Fatalf("direct fallback should use empty proxy and HTTPS, got proxy=%q useHTTP=%v", proxyURL, useHTTP)
 			}
 			directFetches++
-			return nil, nil
+			return empty.Image, nil
 		},
 		isNydusImageFn: func(v1.Image) (bool, error) {
 			return true, nil
@@ -65,7 +66,7 @@ func TestFetchAndExtractBootstrapFallsBackToDirectFetchAfterProxyRetries(t *test
 		},
 	}
 
-	got, _, err := client.FetchAndExtractBootstrap(context.Background(), "registry.example/test:nydus", t.TempDir(), "http://proxy.local")
+	got, _, _, err := client.FetchAndExtractBootstrapWithImageConfig(context.Background(), "registry.example/test:nydus", t.TempDir(), "http://proxy.local")
 	if err != nil {
 		t.Fatalf("FetchAndExtractBootstrap() error = %v", err)
 	}
@@ -103,7 +104,7 @@ func TestFetchAndExtractBootstrapRetriesOnUnexpectedEOF(t *testing.T) {
 		},
 		fetchImageFn: func(_ context.Context, _ string, proxyURL string, useHTTP bool) (v1.Image, error) {
 			directFetches++
-			return nil, nil
+			return empty.Image, nil
 		},
 		isNydusImageFn: func(v1.Image) (bool, error) {
 			return true, nil
@@ -113,7 +114,7 @@ func TestFetchAndExtractBootstrapRetriesOnUnexpectedEOF(t *testing.T) {
 		},
 	}
 
-	got, _, err := client.FetchAndExtractBootstrap(context.Background(), "registry.example/test:nydus", t.TempDir(), "http://proxy.local")
+	got, _, _, err := client.FetchAndExtractBootstrapWithImageConfig(context.Background(), "registry.example/test:nydus", t.TempDir(), "http://proxy.local")
 	if err != nil {
 		t.Fatalf("FetchAndExtractBootstrap() error = %v", err)
 	}
@@ -152,7 +153,7 @@ func TestFetchAndExtractBootstrapSkipsDirectFallbackForNonRetryableError(t *test
 		},
 	}
 
-	if _, _, err := client.FetchAndExtractBootstrap(context.Background(), "registry.example/test:nydus", t.TempDir(), "http://proxy.local"); err == nil {
+	if _, _, _, err := client.FetchAndExtractBootstrapWithImageConfig(context.Background(), "registry.example/test:nydus", t.TempDir(), "http://proxy.local"); err == nil {
 		t.Fatalf("FetchAndExtractBootstrap() error = nil, want non-nil")
 	}
 	if proxyFetches != 1 {

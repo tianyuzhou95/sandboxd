@@ -32,6 +32,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imgcgroup"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/registryauth"
 )
@@ -179,22 +180,23 @@ func (cfg *BackendConfig) LoadTemplate(templatePath string) error {
 }
 
 type DaemonMeta struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	CfgPath       string   `json:"cfg_path"`
-	MountPoint    string   `json:"mount_point"`
-	DaemonDir     string   `json:"daemon_dir"`
-	DaemonLogPath string   `json:"daemon_log_path"`
-	PidFilePath   string   `json:"pid_file_path"`
-	CachePath     string   `json:"cache_path"`
-	ImageMetaDir  string   `json:"image_meta_dir"`
-	ChunkDBDir    string   `json:"chunk_db_dir"`
-	SourceType    string   `json:"source_type,omitempty"`    // "oss" or "nydus"
-	BootstrapPath string   `json:"bootstrap_path,omitempty"` // For Nydus: path to bootstrap file
-	CacheDir      string   `json:"cache_dir,omitempty"`      // For Nydus: --cache-dir parameter
-	ImageURL      string   `json:"image_url,omitempty"`      // For Nydus: image URL for bootstrap download
-	Env           []string `json:"env,omitempty"`            // Environment variables from image config
-	EnvResolved   bool     `json:"env_resolved,omitempty"`   // True after env has been extracted (distinguishes nil env from unresolved)
+	ID            string               `json:"id"`
+	Name          string               `json:"name"`
+	CfgPath       string               `json:"cfg_path"`
+	MountPoint    string               `json:"mount_point"`
+	DaemonDir     string               `json:"daemon_dir"`
+	DaemonLogPath string               `json:"daemon_log_path"`
+	PidFilePath   string               `json:"pid_file_path"`
+	CachePath     string               `json:"cache_path"`
+	ImageMetaDir  string               `json:"image_meta_dir"`
+	ChunkDBDir    string               `json:"chunk_db_dir"`
+	SourceType    string               `json:"source_type,omitempty"`    // "oss" or "nydus"
+	BootstrapPath string               `json:"bootstrap_path,omitempty"` // For Nydus: path to bootstrap file
+	CacheDir      string               `json:"cache_dir,omitempty"`      // For Nydus: --cache-dir parameter
+	ImageURL      string               `json:"image_url,omitempty"`      // For Nydus: image URL for bootstrap download
+	Env           []string             `json:"env,omitempty"`            // Environment variables from image config
+	EnvResolved   bool                 `json:"env_resolved,omitempty"`   // True after env has been extracted (distinguishes nil env from unresolved)
+	ImageProcess  *imageconfig.Process `json:"image_process,omitempty"`
 }
 
 // DaemonInfo contains basic information about a daemon
@@ -281,6 +283,45 @@ func (d *Daemon) MountPoint() string {
 
 func (d *Daemon) Env() []string {
 	return d.meta.Env
+}
+
+func (d *Daemon) ImageProcess() *imageconfig.Process {
+	return imageconfig.Clone(d.meta.ImageProcess)
+}
+
+// ResolveImageProcess returns cached image process metadata or upgrades daemon
+// metadata created by an older sandboxd release on demand.
+func (d *Daemon) ResolveImageProcess(ctx context.Context) (*imageconfig.Process, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.meta.SourceType != "nydus" {
+		return nil, fmt.Errorf("daemon %s is not backed by a Nydus image", d.meta.ID)
+	}
+	if d.meta.ImageProcess != nil {
+		return imageconfig.Clone(d.meta.ImageProcess), nil
+	}
+	if d.nydusClient == nil || d.meta.ImageURL == "" {
+		return nil, fmt.Errorf("image config resolver is unavailable for daemon %s", d.meta.ID)
+	}
+	_, envVars, imageProcess, err := d.nydusClient.FetchAndExtractBootstrapWithImageConfig(
+		ctx,
+		d.meta.ImageURL,
+		d.meta.DaemonDir,
+		d.proxyURL,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve image process for %s: %w", d.meta.ImageURL, err)
+	}
+	if imageProcess == nil {
+		return nil, fmt.Errorf("image process config is unavailable for %s", d.meta.ImageURL)
+	}
+	d.meta.Env = envVars
+	d.meta.EnvResolved = true
+	d.meta.ImageProcess = imageconfig.Clone(imageProcess)
+	if err := d.saveMeta(); err != nil {
+		return nil, fmt.Errorf("persist image process for %s: %w", d.meta.ImageURL, err)
+	}
+	return imageconfig.Clone(d.meta.ImageProcess), nil
 }
 
 // BootstrapPath returns the local Nydus bootstrap that defines the mounted
@@ -689,7 +730,7 @@ func (d *Daemon) initializeDaemon(ctx context.Context, timing *TimedOperation) e
 
 		stageStart := time.Now()
 		logrus.WithFields(d.daemonLogFields()).Info("fetching Nydus bootstrap")
-		extractedPath, envVars, err := d.nydusClient.FetchAndExtractBootstrap(ctx, d.meta.ImageURL, d.meta.DaemonDir, d.proxyURL)
+		extractedPath, envVars, imageProcess, err := d.nydusClient.FetchAndExtractBootstrapWithImageConfig(ctx, d.meta.ImageURL, d.meta.DaemonDir, d.proxyURL)
 		if err != nil {
 			logrus.WithFields(d.daemonLogFields()).WithError(err).Error("failed to fetch and extract bootstrap")
 			timing.Fail(err)
@@ -698,6 +739,7 @@ func (d *Daemon) initializeDaemon(ctx context.Context, timing *TimedOperation) e
 		d.meta.BootstrapPath = extractedPath
 		d.meta.Env = envVars
 		d.meta.EnvResolved = true
+		d.meta.ImageProcess = imageconfig.Clone(imageProcess)
 		logrus.WithFields(d.daemonLogFields()).WithField("bootstrap_path", extractedPath).Info("extracted bootstrap")
 		timing.Stage("fetch_bootstrap", time.Since(stageStart))
 
@@ -712,12 +754,13 @@ func (d *Daemon) initializeDaemon(ctx context.Context, timing *TimedOperation) e
 		// (old metadata predating env support). Re-fetch to extract env.
 		if d.nydusClient != nil && d.meta.ImageURL != "" {
 			stageStart := time.Now()
-			_, envVars, err := d.nydusClient.FetchAndExtractBootstrap(ctx, d.meta.ImageURL, d.meta.DaemonDir, d.proxyURL)
+			_, envVars, imageProcess, err := d.nydusClient.FetchAndExtractBootstrapWithImageConfig(ctx, d.meta.ImageURL, d.meta.DaemonDir, d.proxyURL)
 			if err != nil {
 				logrus.WithFields(d.daemonLogFields()).WithError(err).Debug("failed to fetch env for existing daemon")
 			} else {
 				d.meta.Env = envVars
 				d.meta.EnvResolved = true
+				d.meta.ImageProcess = imageconfig.Clone(imageProcess)
 				if saveErr := d.saveMeta(); saveErr != nil {
 					logrus.WithFields(d.daemonLogFields()).WithError(saveErr).Warn("failed to persist env to daemon meta")
 				}

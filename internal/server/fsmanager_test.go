@@ -23,6 +23,7 @@ import (
 	"github.com/inclusionAI/sandboxd/config"
 	imageapi "github.com/inclusionAI/sandboxd/pkg/imagemanager/api"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/distillfs"
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/oci"
 	"github.com/inclusionAI/sandboxd/pkg/store"
 )
@@ -51,6 +52,10 @@ func (s *fsTestImageService) MountOCI(req *imageapi.OCIMountRequest) (*imageapi.
 	s.ociMountCalls[req.ImageURL]++
 	s.mu.Unlock()
 	return &imageapi.OCIMountResponse{MountPath: "/mnt/oci/" + req.ImageURL}, nil
+}
+
+func (s *fsTestImageService) ImageProcess(string) (*imageconfig.Process, error) {
+	return &imageconfig.Process{}, nil
 }
 
 func (s *fsTestImageService) RootfsMaterialization(string) (*imageapi.RootfsMaterialization, error) {

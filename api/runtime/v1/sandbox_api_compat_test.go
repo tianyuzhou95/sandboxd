@@ -33,10 +33,10 @@ func TestV010WireContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(wire)
-	// Rolled for PR #30's RuntimeInfo message + checkpoint snapshot_type
-	// (field 6 of CheckpointRequest); both are wire-compatible additions.
+	// Rolled for StartRequest.inject_entrypoint (field 22), which supplies the
+	// in-sandbox destination for injected OCI image startup configuration.
 	// Recompute after any proto change: run this test, copy the got hash.
-	const want = "7ed46c0121f537e972ff7f8524e24a5689401ec35e1707fc63e230efa42072b1"
+	const want = "5cbcd4bbad5035b8c2d5224e0f08944f38ee0188d5116e09ac8f16ef5419fc6b"
 	if got := hex.EncodeToString(sum[:]); got != want {
 		t.Fatalf("sandbox API descriptor hash = %s, want %s", got, want)
 	}

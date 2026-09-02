@@ -51,6 +51,10 @@ var StartCmd = cli.Command{
 			Name:  "rootfs-readonly",
 			Usage: "mark rootfs readonly in the Start request",
 		},
+		cli.StringFlag{
+			Name:  "inject-entrypoint",
+			Usage: "inject the effective OCI image process config at this in-sandbox path",
+		},
 		cli.BoolFlag{
 			Name:  "enable-kvm",
 			Usage: "expose the configured KVM device in a runc sandbox",
@@ -174,6 +178,7 @@ var StartCmd = cli.Command{
 			XpuAllocations:          xpuAllocations,
 			WritableLayerLimitBytes: writableLayerLimitBytes,
 			ExtraConfig:             extraConfig,
+			InjectEntrypoint:        context.String("inject-entrypoint"),
 		})
 		if err != nil {
 			return err

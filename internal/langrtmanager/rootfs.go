@@ -21,24 +21,27 @@ import (
 
 	runtime_api "github.com/inclusionAI/sandboxd/api/runtime/v1"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/api"
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	"github.com/sirupsen/logrus"
 )
 
 // ImageMounter abstracts rootfs mount/umount operations for testability.
 type ImageMounter interface {
-	Mount(cfg RootfsConfig) (path string, env []string, err error)
+	Mount(cfg RootfsConfig) (path string, env []string, imageProcess *imageconfig.Process, err error)
+	ImageProcess(cfg RootfsConfig) (*imageconfig.Process, error)
 	Umount(cfg RootfsConfig) error
 }
 
 type RootFS struct {
-	cfg         RootfsConfig
-	path        string
-	env         []string
-	mounter     ImageMounter
-	cleanupFunc func()
-	mu          sync.Mutex // mu protects fields below
-	refcnt      int64
-	deleted     bool
+	cfg          RootfsConfig
+	path         string
+	env          []string
+	imageProcess *imageconfig.Process
+	mounter      ImageMounter
+	cleanupFunc  func()
+	mu           sync.Mutex // mu protects fields below
+	refcnt       int64
+	deleted      bool
 }
 
 type RootfsConfig struct {
@@ -79,6 +82,27 @@ func (rf *RootFS) Env() []string {
 	return rf.env
 }
 
+func (rf *RootFS) ImageProcess() *imageconfig.Process {
+	return imageconfig.Clone(rf.imageProcess)
+}
+
+func (rf *RootFS) ResolveImageProcess() (*imageconfig.Process, error) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.imageProcess != nil {
+		return imageconfig.Clone(rf.imageProcess), nil
+	}
+	imageProcess, err := rf.mounter.ImageProcess(rf.cfg)
+	if err != nil {
+		return nil, err
+	}
+	if imageProcess == nil {
+		return nil, fmt.Errorf("image process config is unavailable")
+	}
+	rf.imageProcess = imageconfig.Clone(imageProcess)
+	return imageconfig.Clone(rf.imageProcess), nil
+}
+
 func (rf *RootFS) Config() RootfsConfig {
 	return rf.cfg
 }
@@ -87,12 +111,13 @@ func (rf *RootFS) MountImage() error {
 	if rf.path != "" {
 		return fmt.Errorf("already mounted")
 	}
-	path, env, err := rf.mounter.Mount(rf.cfg)
+	path, env, imageProcess, err := rf.mounter.Mount(rf.cfg)
 	if err != nil {
 		return err
 	}
 	rf.path = path
 	rf.env = env
+	rf.imageProcess = imageconfig.Clone(imageProcess)
 	return nil
 }
 
@@ -122,7 +147,7 @@ func (d *defaultMounter) client() api.Service {
 	return d.svc
 }
 
-func (d *defaultMounter) Mount(cfg RootfsConfig) (string, []string, error) {
+func (d *defaultMounter) Mount(cfg RootfsConfig) (string, []string, *imageconfig.Process, error) {
 	switch cfg.SrcType {
 	case runtime_api.RootfsSrcType_S3:
 		mi, err := d.client().MountOSS(&api.OSSMountRequest{
@@ -133,30 +158,37 @@ func (d *defaultMounter) Mount(cfg RootfsConfig) (string, []string, error) {
 			AccessKeySecret: cfg.AccessKeySecret,
 		})
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
-		return mi.FilePath, mi.Env, nil
+		return mi.FilePath, mi.Env, mi.ImageProcess, nil
 
 	case runtime_api.RootfsSrcType_IMAGE:
 		resp, err := d.client().MountOCI(&api.OCIMountRequest{
 			ImageURL: cfg.ImageUrl,
 		})
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
-		return resp.MountPath, resp.Env, nil
+		return resp.MountPath, resp.Env, resp.ImageProcess, nil
 
 	case runtime_api.RootfsSrcType_LOCAL:
 		// LOCAL rootfs is a pre-existing host path; no image-manager Service
 		// call is involved, so leaving d.svc nil (typical in tests) is fine.
 		if _, err := os.Stat(cfg.Path); err != nil {
-			return "", nil, fmt.Errorf("failed to stat local rootfs path %s: %w", cfg.Path, err)
+			return "", nil, nil, fmt.Errorf("failed to stat local rootfs path %s: %w", cfg.Path, err)
 		}
-		return cfg.Path, nil, nil
+		return cfg.Path, nil, nil, nil
 
 	default:
-		return "", nil, fmt.Errorf("Unsupported image type: %v", cfg.SrcType.String())
+		return "", nil, nil, fmt.Errorf("Unsupported image type: %v", cfg.SrcType.String())
 	}
+}
+
+func (d *defaultMounter) ImageProcess(cfg RootfsConfig) (*imageconfig.Process, error) {
+	if cfg.SrcType != runtime_api.RootfsSrcType_IMAGE {
+		return nil, fmt.Errorf("image process config requires an image rootfs")
+	}
+	return d.client().ImageProcess(cfg.ImageUrl)
 }
 
 func (d *defaultMounter) Umount(cfg RootfsConfig) error {

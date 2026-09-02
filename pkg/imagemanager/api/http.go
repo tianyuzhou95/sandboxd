@@ -34,6 +34,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/distillfs"
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/nydus"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/oci"
 )
@@ -287,9 +288,10 @@ func (w *HttpWorker) MountNydus(req *NydusMountRequest) (*MountInfo, error) {
 		logrus.Infof("daemon %s for image %s already exists, reusing it", id, req.ImageURL)
 
 		info := &MountInfo{
-			MountPoint: d.MountPoint(),
-			FilePath:   "",
-			Env:        d.Env(),
+			MountPoint:   d.MountPoint(),
+			FilePath:     "",
+			Env:          d.Env(),
+			ImageProcess: d.ImageProcess(),
 		}
 		timing.Stage("check_existing_daemon", time.Since(stageStart))
 
@@ -361,6 +363,7 @@ func (w *HttpWorker) MountNydus(req *NydusMountRequest) (*MountInfo, error) {
 	}
 	w.mgr.SetDaemonReferenced(opts.ID, true)
 	info.Env = d.Env()
+	info.ImageProcess = d.ImageProcess()
 	logrus.WithFields(logrus.Fields{
 		"daemon_id":   opts.ID,
 		"mount_point": d.MountPoint(),
@@ -425,9 +428,10 @@ func (w *HttpWorker) UnmountNydus(req *NydusUmountRequest) (*MountInfo, error) {
 }
 
 type nydusMountAttempt struct {
-	mountPoint string
-	env        []string
-	detected   bool
+	mountPoint   string
+	env          []string
+	imageProcess *imageconfig.Process
+	detected     bool
 }
 
 // tryMountNydus attempts to mount an image as Nydus format.
@@ -441,7 +445,7 @@ func (w *HttpWorker) tryMountNydus(imageURL string) (nydusMountAttempt, error) {
 			if err != nil {
 				return nydusMountAttempt{detected: true}, fmt.Errorf("failed to mount Nydus image: %w", err)
 			}
-			return nydusMountAttempt{mountPoint: info.MountPoint, env: info.Env, detected: true}, nil
+			return nydusMountAttempt{mountPoint: info.MountPoint, env: info.Env, imageProcess: info.ImageProcess, detected: true}, nil
 		} else {
 			logrus.Debugf("cache hit: %s is not a Nydus image", imageURL)
 			return nydusMountAttempt{}, fmt.Errorf("not a Nydus image (cached)")
@@ -458,7 +462,7 @@ func (w *HttpWorker) tryMountNydus(imageURL string) (nydusMountAttempt, error) {
 			if err != nil {
 				return nydusMountAttempt{detected: true}, fmt.Errorf("failed to mount Nydus image: %w", err)
 			}
-			return nydusMountAttempt{mountPoint: info.MountPoint, env: info.Env, detected: true}, nil
+			return nydusMountAttempt{mountPoint: info.MountPoint, env: info.Env, imageProcess: info.ImageProcess, detected: true}, nil
 		}
 
 		// Cache miss, fetch and check.
@@ -483,7 +487,7 @@ func (w *HttpWorker) tryMountNydus(imageURL string) (nydusMountAttempt, error) {
 		if err != nil {
 			return nydusMountAttempt{detected: true}, fmt.Errorf("failed to mount Nydus image: %w", err)
 		}
-		return nydusMountAttempt{mountPoint: info.MountPoint, env: info.Env, detected: true}, nil
+		return nydusMountAttempt{mountPoint: info.MountPoint, env: info.Env, imageProcess: info.ImageProcess, detected: true}, nil
 	})
 }
 
@@ -520,7 +524,7 @@ func (w *HttpWorker) MountOCI(req *OCIMountRequest) (*OCIMountResponse, error) {
 		// Try original URL
 		if attempt, err := w.tryMountNydus(req.ImageURL); err == nil {
 			w.recordMount(req.ImageURL, "nydus", req.ImageURL, attempt.mountPoint)
-			return &OCIMountResponse{MountPath: attempt.mountPoint, Env: attempt.env}, nil
+			return &OCIMountResponse{MountPath: attempt.mountPoint, Env: attempt.env, ImageProcess: attempt.imageProcess}, nil
 		} else if attempt.detected {
 			logrus.WithError(err).Warnf("detected Nydus image for %s but Nydus mount failed, skip OCI fallback", req.ImageURL)
 			return nil, err
@@ -532,7 +536,7 @@ func (w *HttpWorker) MountOCI(req *OCIMountRequest) (*OCIMountResponse, error) {
 			logrus.Infof("trying Nydus detection with suffix: %s", imageWithSuffix)
 			if attempt, err := w.tryMountNydus(imageWithSuffix); err == nil {
 				w.recordMount(req.ImageURL, "nydus", imageWithSuffix, attempt.mountPoint)
-				return &OCIMountResponse{MountPath: attempt.mountPoint, Env: attempt.env}, nil
+				return &OCIMountResponse{MountPath: attempt.mountPoint, Env: attempt.env, ImageProcess: attempt.imageProcess}, nil
 			} else if attempt.detected {
 				logrus.WithError(err).Warnf("detected Nydus image for %s via suffix %s but Nydus mount failed, skip OCI fallback", req.ImageURL, imageWithSuffix)
 				return nil, err
@@ -542,12 +546,64 @@ func (w *HttpWorker) MountOCI(req *OCIMountRequest) (*OCIMountResponse, error) {
 
 	// Fallback to regular OCI mount flow.
 	logrus.Infof("no Nydus image detected, using OCI overlay mount for %s", req.ImageURL)
-	mountPoint, envVars, err := w.ociMgr.MountImageWithContext(w.ctx, req.ImageURL)
+	mountPoint, envVars, imageProcess, err := w.ociMgr.MountImageConfigWithContext(w.ctx, req.ImageURL)
 	if err != nil {
 		return nil, err
 	}
 	w.recordMount(req.ImageURL, "oci", "", mountPoint)
-	return &OCIMountResponse{MountPath: mountPoint, Env: envVars}, nil
+	return &OCIMountResponse{MountPath: mountPoint, Env: envVars, ImageProcess: imageProcess}, nil
+}
+
+// ImageProcess resolves process metadata for an already mounted OCI or Nydus
+// image. It is separate from MountOCI so old cached mounts need registry access
+// only when a caller explicitly requests inherited image startup.
+func (w *HttpWorker) ImageProcess(imageURL string) (*imageconfig.Process, error) {
+	if imageURL == "" {
+		return nil, fmt.Errorf("image_url is required")
+	}
+	useOCI := false
+	if w.mountStore != nil {
+		record, err := w.mountStore.Get(imageURL)
+		if err != nil {
+			return nil, fmt.Errorf("read image mount record for %s: %w", imageURL, err)
+		}
+		if record != nil && record.MountType == "nydus" {
+			if w.mgr == nil {
+				return nil, fmt.Errorf("distillfs manager is not initialized")
+			}
+			nydusImageURL := record.NydusImageURL
+			if nydusImageURL == "" {
+				nydusImageURL = imageURL
+			}
+			d := w.mgr.GetDaemon(generateNydusID(nydusImageURL))
+			if d == nil {
+				return nil, fmt.Errorf("Nydus daemon for image %s is unavailable", imageURL)
+			}
+			return d.ResolveImageProcess(w.ctx)
+		}
+		if record != nil && record.MountType != "oci" {
+			return nil, fmt.Errorf("unsupported mount type %q for image %s", record.MountType, imageURL)
+		}
+		useOCI = record != nil
+	}
+
+	// The mount store is optional. When disabled, discover an active Nydus
+	// daemon using the same original/suffix candidates as MountOCI.
+	if !useOCI && w.mgr != nil {
+		candidates := []string{imageURL}
+		if w.nydusSuffix != "" {
+			candidates = append(candidates, imageURL+w.nydusSuffix)
+		}
+		for _, candidate := range candidates {
+			if d := w.mgr.GetDaemon(generateNydusID(candidate)); d != nil {
+				return d.ResolveImageProcess(w.ctx)
+			}
+		}
+	}
+	if w.ociMgr == nil {
+		return nil, fmt.Errorf("oci manager is not initialized")
+	}
+	return w.ociMgr.ImageProcessWithContext(w.ctx, imageURL)
 }
 
 // RootfsMaterialization resolves content-addressed storage owned by the

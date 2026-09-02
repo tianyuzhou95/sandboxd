@@ -22,6 +22,7 @@ import (
 	"time"
 
 	api "github.com/inclusionAI/sandboxd/api/runtime/v1"
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 )
 
 // mockMounter is a test ImageMounter that returns a fake path and tracks calls.
@@ -33,17 +34,21 @@ type mockMounter struct {
 	mountErr    error
 }
 
-func (m *mockMounter) Mount(cfg RootfsConfig) (string, []string, error) {
+func (m *mockMounter) Mount(cfg RootfsConfig) (string, []string, *imageconfig.Process, error) {
 	if m.mountDelay > 0 {
 		time.Sleep(m.mountDelay)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.mountErr != nil {
-		return "", nil, m.mountErr
+		return "", nil, nil, m.mountErr
 	}
 	m.mountCount++
-	return fmt.Sprintf("/fake/rootfs/%s/%d", cfg.Path, m.mountCount), nil, nil
+	return fmt.Sprintf("/fake/rootfs/%s/%d", cfg.Path, m.mountCount), nil, nil, nil
+}
+
+func (m *mockMounter) ImageProcess(RootfsConfig) (*imageconfig.Process, error) {
+	return &imageconfig.Process{}, nil
 }
 
 func (m *mockMounter) Umount(cfg RootfsConfig) error {

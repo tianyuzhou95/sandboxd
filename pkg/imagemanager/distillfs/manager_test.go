@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 )
 
 // mockNydusClient is a mock implementation of NydusClient for testing
@@ -27,12 +29,12 @@ type mockNydusClient struct {
 	fetchAndExtractFunc func(ctx context.Context, imageURL string, outputDir string, proxyURL string) (string, error)
 }
 
-func (m *mockNydusClient) FetchAndExtractBootstrap(ctx context.Context, imageURL string, outputDir string, proxyURL string) (string, []string, error) {
+func (m *mockNydusClient) FetchAndExtractBootstrapWithImageConfig(ctx context.Context, imageURL string, outputDir string, proxyURL string) (string, []string, *imageconfig.Process, error) {
 	if m.fetchAndExtractFunc != nil {
 		path, err := m.fetchAndExtractFunc(ctx, imageURL, outputDir, proxyURL)
-		return path, nil, err
+		return path, nil, &imageconfig.Process{}, err
 	}
-	return filepath.Join(outputDir, "bootstrap"), nil, nil
+	return filepath.Join(outputDir, "bootstrap"), nil, &imageconfig.Process{}, nil
 }
 
 func createTestOSSAuthsFile(t *testing.T, dir string) string {

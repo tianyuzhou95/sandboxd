@@ -15,6 +15,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -25,10 +26,15 @@ import (
 
 	runtime "github.com/inclusionAI/sandboxd/api/runtime/v1"
 	"github.com/inclusionAI/sandboxd/internal/util"
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	svc "github.com/inclusionAI/sandboxd/pkg/runtime"
 )
 
-const sandboxHostnameLimit = 64
+const (
+	sandboxHostnameLimit      = 64
+	imageProcessConfigVersion = 1
+	imageProcessConfigFile    = "image-process.json"
+)
 
 var defaultSandboxFileDestinations = []string{
 	"/etc/hosts",
@@ -39,6 +45,50 @@ var defaultSandboxFileDestinations = []string{
 type preparedSandboxFiles struct {
 	root   string
 	mounts []*runtime.Mount
+}
+
+type imageProcessSpec struct {
+	Version int      `json:"version"`
+	Args    []string `json:"args"`
+	Cwd     string   `json:"cwd"`
+	User    string   `json:"user"`
+}
+
+func buildImageProcessSpec(config *imageconfig.Process) (*imageProcessSpec, error) {
+	if config == nil {
+		return nil, fmt.Errorf("image process config is unavailable")
+	}
+	args := make([]string, 0, len(config.Entrypoint)+len(config.Cmd))
+	if len(config.Entrypoint) > 0 {
+		args = append(args, config.Entrypoint...)
+		args = append(args, config.Cmd...)
+	} else {
+		args = append(args, config.Cmd...)
+	}
+	if len(args) > 0 && args[0] == "" {
+		return nil, fmt.Errorf("image process argv[0] is empty")
+	}
+	for _, arg := range args {
+		if strings.IndexByte(arg, 0) >= 0 {
+			return nil, fmt.Errorf("image process argument contains NUL")
+		}
+	}
+	cwd := config.Cwd
+	if cwd == "" {
+		cwd = "/"
+	}
+	if !path.IsAbs(cwd) || strings.IndexByte(cwd, 0) >= 0 {
+		return nil, fmt.Errorf("image working directory %q is invalid", cwd)
+	}
+	if strings.IndexByte(config.User, 0) >= 0 {
+		return nil, fmt.Errorf("image user contains NUL")
+	}
+	return &imageProcessSpec{
+		Version: imageProcessConfigVersion,
+		Args:    args,
+		Cwd:     cwd,
+		User:    config.User,
+	}, nil
 }
 
 func (p *preparedSandboxFiles) Mounts() []*runtime.Mount {
@@ -60,6 +110,8 @@ func (h *sandboxService) prepareSandboxFiles(
 	defaults svc.SandboxDefaults,
 	networkIP net.IP,
 	mounts []*runtime.Mount,
+	imageProcess *imageProcessSpec,
+	imageProcessTarget string,
 ) (*preparedSandboxFiles, error) {
 	hostname := defaults.Hostname
 	if hostname == "" {
@@ -80,10 +132,13 @@ func (h *sandboxService) prepareSandboxFiles(
 	for _, mount := range mounts {
 		owners = append(owners, mount.GetTarget())
 	}
+	if imageProcess != nil && mountDestinationsOwn(owners, imageProcessTarget) {
+		return nil, fmt.Errorf("mount target conflicts with managed image process config at %s", imageProcessTarget)
+	}
 	needsHosts := !mountDestinationsOwn(owners, "/etc/hosts")
 	needsHostname := !mountDestinationsOwn(owners, "/etc/hostname")
 	needsResolver := h.aclMgr != nil || !mountDestinationsOwn(owners, "/etc/resolv.conf")
-	if !needsHosts && !needsHostname && !needsResolver {
+	if !needsHosts && !needsHostname && !needsResolver && imageProcess == nil {
 		return prepared, nil
 	}
 	if err := os.RemoveAll(root); err != nil {
@@ -148,6 +203,17 @@ func (h *sandboxService) prepareSandboxFiles(
 			prepared.mounts = append(prepared.mounts, sandboxFileMount("/etc/resolv.conf", source))
 		}
 	}
+	if imageProcess != nil {
+		content, err := json.Marshal(imageProcess)
+		if err != nil {
+			return nil, fmt.Errorf("marshal image process config: %w", err)
+		}
+		source := filepath.Join(root, imageProcessConfigFile)
+		if err := atomicWriteSandboxFile(source, content); err != nil {
+			return nil, fmt.Errorf("write image process config: %w", err)
+		}
+		prepared.mounts = append(prepared.mounts, sandboxFileMount(imageProcessTarget, source))
+	}
 	failed = false
 	return prepared, nil
 }
@@ -159,6 +225,32 @@ func validateManagedResolverMounts(mounts []*runtime.Mount) error {
 		}
 		if mountDestinationsOwn([]string{mount.GetTarget()}, "/etc/resolv.conf") {
 			return fmt.Errorf("mount target %q conflicts with managed DNS", mount.GetTarget())
+		}
+	}
+	return nil
+}
+
+func validateImageProcessTarget(target string) error {
+	if strings.IndexByte(target, 0) >= 0 || !path.IsAbs(target) {
+		return fmt.Errorf("inject_entrypoint path %q must be absolute", target)
+	}
+	if target == "/" || path.Clean(target) != target {
+		return fmt.Errorf("inject_entrypoint path %q must be a canonical file path", target)
+	}
+	return nil
+}
+
+func validateImageProcessMounts(mounts []*runtime.Mount, target string) error {
+	for _, mount := range mounts {
+		if mount == nil {
+			continue
+		}
+		if mountDestinationsOwn([]string{mount.GetTarget()}, target) {
+			return fmt.Errorf(
+				"mount target %q conflicts with managed image process config at %s",
+				mount.GetTarget(),
+				target,
+			)
 		}
 	}
 	return nil

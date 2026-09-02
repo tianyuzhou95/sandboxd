@@ -15,18 +15,167 @@
 package server
 
 import (
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	runtime "github.com/inclusionAI/sandboxd/api/runtime/v1"
 	"github.com/inclusionAI/sandboxd/config"
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	"github.com/inclusionAI/sandboxd/pkg/networkmanager"
 	"github.com/inclusionAI/sandboxd/pkg/networkmanager/networkacl"
 	svc "github.com/inclusionAI/sandboxd/pkg/runtime"
 )
+
+func TestBuildImageProcessSpec(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *imageconfig.Process
+		want   *imageProcessSpec
+	}{
+		{
+			name: "entrypoint and cmd",
+			config: &imageconfig.Process{
+				Entrypoint: []string{"/entrypoint", "--flag"},
+				Cmd:        []string{"serve", "8080"},
+				Cwd:        "/app",
+				User:       "1000:1000",
+			},
+			want: &imageProcessSpec{
+				Version: 1,
+				Args:    []string{"/entrypoint", "--flag", "serve", "8080"},
+				Cwd:     "/app",
+				User:    "1000:1000",
+			},
+		},
+		{
+			name:   "cmd only",
+			config: &imageconfig.Process{Cmd: []string{"sleep", "1"}},
+			want:   &imageProcessSpec{Version: 1, Args: []string{"sleep", "1"}, Cwd: "/"},
+		},
+		{
+			name:   "no startup command",
+			config: &imageconfig.Process{},
+			want:   &imageProcessSpec{Version: 1, Args: []string{}, Cwd: "/"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := buildImageProcessSpec(test.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("buildImageProcessSpec() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildImageProcessSpecRejectsInvalidConfig(t *testing.T) {
+	for _, config := range []*imageconfig.Process{
+		nil,
+		{Entrypoint: []string{""}},
+		{Cmd: []string{"echo", "bad\x00arg"}},
+		{Cmd: []string{"echo"}, Cwd: "relative"},
+		{Cmd: []string{"echo"}, User: "bad\x00user"},
+	} {
+		if _, err := buildImageProcessSpec(config); err == nil {
+			t.Fatalf("buildImageProcessSpec(%#v) error = nil", config)
+		}
+	}
+}
+
+func TestPrepareSandboxFilesInjectsImageProcessConfig(t *testing.T) {
+	service := &sandboxService{config: config.Config{RootDir: t.TempDir()}}
+	target := "/run/yuanrong/image-process.json"
+	want := &imageProcessSpec{
+		Version: 1,
+		Args:    []string{"/entrypoint", "serve"},
+		Cwd:     "/app",
+		User:    "1000:1000",
+	}
+	prepared, err := service.prepareSandboxFiles(
+		"sbox-test",
+		svc.SandboxDefaults{
+			Hostname:          svc.DefaultSandboxHostname,
+			MountDestinations: defaultSandboxFileDestinations,
+		},
+		nil,
+		nil,
+		want,
+		target,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Rollback()
+	if len(prepared.Mounts()) != 1 {
+		t.Fatalf("mounts = %+v", prepared.Mounts())
+	}
+	mount := prepared.Mounts()[0]
+	if mount.GetTarget() != target ||
+		!reflect.DeepEqual(mount.GetOptions(), []string{"bind", "ro"}) {
+		t.Fatalf("image process mount = %+v", mount)
+	}
+	data, err := os.ReadFile(mount.GetHostPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := &imageProcessSpec{}
+	if err := json.Unmarshal(data, got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("image process file = %#v, want %#v", got, want)
+	}
+}
+
+func TestPrepareSandboxFilesRejectsImageProcessMountConflict(t *testing.T) {
+	service := &sandboxService{config: config.Config{RootDir: t.TempDir()}}
+	configTarget := "/run/yuanrong/image-process.json"
+	for _, target := range []string{"/", "/run", "/run/yuanrong", configTarget} {
+		_, err := service.prepareSandboxFiles(
+			"sbox-test",
+			svc.SandboxDefaults{Hostname: svc.DefaultSandboxHostname},
+			nil,
+			[]*runtime.Mount{{Target: target}},
+			&imageProcessSpec{Version: 1, Args: []string{}, Cwd: "/"},
+			configTarget,
+		)
+		if err == nil || !strings.Contains(err.Error(), "managed image process config") {
+			t.Fatalf("mount target %q error = %v", target, err)
+		}
+	}
+}
+
+func TestValidateImageProcessMounts(t *testing.T) {
+	configTarget := "/run/yuanrong/image-process.json"
+	for _, target := range []string{"/", "/run", "/run/yuanrong", configTarget} {
+		err := validateImageProcessMounts([]*runtime.Mount{{Target: target}}, configTarget)
+		if err == nil {
+			t.Fatalf("mount target %q did not conflict with image process config", target)
+		}
+	}
+	if err := validateImageProcessMounts([]*runtime.Mount{{Target: "/workspace"}}, configTarget); err != nil {
+		t.Fatalf("unrelated mount rejected: %v", err)
+	}
+}
+
+func TestValidateImageProcessTarget(t *testing.T) {
+	for _, target := range []string{"relative.json", "/", "/run/../tmp/config.json", "/run/config.json/"} {
+		if err := validateImageProcessTarget(target); err == nil {
+			t.Fatalf("target %q accepted", target)
+		}
+	}
+	if err := validateImageProcessTarget("/run/yuanrong/image-process.json"); err != nil {
+		t.Fatalf("valid target rejected: %v", err)
+	}
+}
 
 func TestPrepareSandboxFiles(t *testing.T) {
 	root := t.TempDir()
@@ -45,6 +194,8 @@ func TestPrepareSandboxFiles(t *testing.T) {
 		svc.SandboxDefaults{Hostname: "configured-host"},
 		net.ParseIP("10.88.0.2"),
 		nil,
+		nil,
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +233,8 @@ func TestPrepareSandboxFilesHonorsParentMount(t *testing.T) {
 		svc.SandboxDefaults{Hostname: svc.DefaultSandboxHostname},
 		nil,
 		[]*runtime.Mount{explicit},
+		nil,
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +254,8 @@ func TestPrepareSandboxFilesHonorsBaseResolverMount(t *testing.T) {
 		},
 		net.ParseIP("10.88.0.2"),
 		nil,
+		nil,
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +290,8 @@ func TestPrepareSandboxFilesUsesManagedResolverForNetworkACL(t *testing.T) {
 		},
 		net.ParseIP("10.88.0.2"),
 		nil,
+		nil,
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +329,8 @@ func TestPrepareSandboxFilesRejectsInvalidHostname(t *testing.T) {
 		svc.SandboxDefaults{Hostname: "bad\nhost"},
 		nil,
 		[]*runtime.Mount{{Target: "/etc"}},
+		nil,
+		"",
 	)
 	if err == nil || !strings.Contains(err.Error(), "invalid character") {
 		t.Fatalf("invalid hostname error = %v", err)

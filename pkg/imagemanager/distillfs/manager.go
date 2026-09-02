@@ -31,6 +31,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/diskusage"
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imgcgroup"
 	"github.com/inclusionAI/sandboxd/pkg/imagemanager/registryauth"
 )
@@ -85,10 +86,9 @@ type manager struct {
 }
 
 // NydusClient interface for fetching Nydus images and extracting bootstrap.
-// FetchAndExtractBootstrap returns the bootstrap path and environment variables
-// parsed from the image config.
+// FetchAndExtractBootstrap returns the bootstrap path and image config.
 type NydusClient interface {
-	FetchAndExtractBootstrap(ctx context.Context, imageURL string, outputDir string, proxyURL string) (string, []string, error)
+	FetchAndExtractBootstrapWithImageConfig(ctx context.Context, imageURL string, outputDir string, proxyURL string) (string, []string, *imageconfig.Process, error)
 }
 
 // ChunkDBStats represents the output of 'distill_fs stats-chunk' command

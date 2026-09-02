@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inclusionAI/sandboxd/pkg/imagemanager/imageconfig"
 	"github.com/sirupsen/logrus"
 )
 
@@ -34,6 +35,7 @@ const (
 	bootstrapCacheDirName    = ".bootstrap_cache"
 	bootstrapCacheFileExt    = ".bootstrap"
 	bootstrapCacheEnvExt     = ".env"
+	bootstrapCacheProcessExt = ".process"
 	bootstrapCacheOutputName = "bootstrap"
 	defaultBootstrapCacheCap = 128
 )
@@ -84,10 +86,10 @@ func newBootstrapCacheWithCapacity(capacity int) *bootstrapCache {
 	}
 }
 
-// Link returns (outputPath, env, hit, error).
+// Link returns (outputPath, env, image process, hit, error).
 // env is nil when the cache entry predates env caching (caller should fetch from registry).
 // env is non-nil (possibly empty) when the env sidecar was found.
-func (c *bootstrapCache) Link(imageURL string, outputDir string) (string, []string, bool, error) {
+func (c *bootstrapCache) Link(imageURL string, outputDir string) (string, []string, *imageconfig.Process, bool, error) {
 	root := c.rootForOutput(outputDir)
 	key := bootstrapCacheKey(imageURL)
 
@@ -95,7 +97,7 @@ func (c *bootstrapCache) Link(imageURL string, outputDir string) (string, []stri
 	defer unlock()
 
 	if err := root.ensureInitialized(); err != nil {
-		return "", nil, false, err
+		return "", nil, nil, false, err
 	}
 
 	outputPath := bootstrapOutputPath(outputDir)
@@ -105,7 +107,7 @@ func (c *bootstrapCache) Link(imageURL string, outputDir string) (string, []stri
 	if elem == nil {
 		root.mu.Unlock()
 		logrus.WithFields(bootstrapCacheLogFields(imageURL, key, root.root, "", outputPath, "")).Debug("nydus bootstrap cache miss")
-		return "", nil, false, nil
+		return "", nil, nil, false, nil
 	}
 
 	entry := elem.Value.(*bootstrapCacheEntry)
@@ -113,7 +115,7 @@ func (c *bootstrapCache) Link(imageURL string, outputDir string) (string, []stri
 		root.removeEntryLocked(elem)
 		root.mu.Unlock()
 		logrus.WithFields(bootstrapCacheLogFields(imageURL, key, root.root, entry.path, "", "")).Warn("nydus bootstrap cache entry disappeared, dropping it from cache")
-		return "", nil, false, nil
+		return "", nil, nil, false, nil
 	}
 	root.lru.MoveToFront(elem)
 	cachePath := entry.path
@@ -121,20 +123,22 @@ func (c *bootstrapCache) Link(imageURL string, outputDir string) (string, []stri
 
 	_ = touchFile(cachePath, root.now())
 	if err := ensureHardLink(cachePath, outputPath); err != nil {
-		return "", nil, false, fmt.Errorf("failed to hardlink cached bootstrap %s to %s: %w", cachePath, outputPath, err)
+		return "", nil, nil, false, fmt.Errorf("failed to hardlink cached bootstrap %s to %s: %w", cachePath, outputPath, err)
 	}
 
 	// Read env sidecar — nil means old entry without env cache.
 	env := readEnvSidecar(root.envPath(key))
+	process := readProcessSidecar(root.processPath(key))
 
 	logrus.WithFields(bootstrapCacheLogFields(imageURL, key, root.root, cachePath, outputPath, "")).
 		WithField("env_cached", env != nil).
+		WithField("process_cached", process != nil).
 		Debug("reused cached nydus bootstrap")
 
-	return outputPath, env, true, nil
+	return outputPath, env, process, true, nil
 }
 
-func (c *bootstrapCache) Store(imageURL string, outputDir string, bootstrapPath string, env []string) error {
+func (c *bootstrapCache) Store(imageURL string, outputDir string, bootstrapPath string, env []string, process *imageconfig.Process) error {
 	if bootstrapPath == "" {
 		return fmt.Errorf("bootstrap path is empty")
 	}
@@ -158,6 +162,9 @@ func (c *bootstrapCache) Store(imageURL string, outputDir string, bootstrapPath 
 	if err := writeEnvSidecar(root.envPath(key), env); err != nil {
 		logrus.WithError(err).Warnf("failed to write env sidecar for %s", imageURL)
 	}
+	if err := writeProcessSidecar(root.processPath(key), process); err != nil {
+		logrus.WithError(err).Warnf("failed to write process sidecar for %s", imageURL)
+	}
 
 	evictedPaths := root.recordAccess(key, cachePath)
 	_ = touchFile(cachePath, root.now())
@@ -170,8 +177,7 @@ func (c *bootstrapCache) Store(imageURL string, outputDir string, bootstrapPath 
 		logrus.WithFields(bootstrapCacheLogFields("", "", root.root, path, "", "")).Info("evicted nydus bootstrap cache entry")
 		_ = os.Remove(path)
 		// Also remove env sidecar for evicted entries.
-		envPath := strings.TrimSuffix(path, bootstrapCacheFileExt) + bootstrapCacheEnvExt
-		_ = os.Remove(envPath)
+		removeBootstrapCacheSidecars(path)
 	}
 	return nil
 }
@@ -245,6 +251,7 @@ func (r *bootstrapCacheRoot) ensureInitialized() error {
 	evictedPaths := r.evictLocked()
 	for _, path := range evictedPaths {
 		_ = os.Remove(path)
+		removeBootstrapCacheSidecars(path)
 	}
 
 	r.initialized = true
@@ -327,6 +334,10 @@ func (r *bootstrapCacheRoot) cachePath(key string) string {
 
 func (r *bootstrapCacheRoot) envPath(key string) string {
 	return filepath.Join(r.root, key+bootstrapCacheEnvExt)
+}
+
+func (r *bootstrapCacheRoot) processPath(key string) string {
+	return filepath.Join(r.root, key+bootstrapCacheProcessExt)
 }
 
 func bootstrapCacheKey(imageURL string) string {
@@ -434,4 +445,37 @@ func readEnvSidecar(path string) []string {
 		return nil
 	}
 	return env
+}
+
+func writeProcessSidecar(path string, process *imageconfig.Process) error {
+	if process == nil {
+		return fmt.Errorf("image process is unresolved")
+	}
+	data, err := json.Marshal(process)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func readProcessSidecar(path string) *imageconfig.Process {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	process := &imageconfig.Process{}
+	if err := json.Unmarshal(data, process); err != nil {
+		return nil
+	}
+	return process
+}
+
+func removeBootstrapCacheSidecars(bootstrapPath string) {
+	base := strings.TrimSuffix(bootstrapPath, bootstrapCacheFileExt)
+	_ = os.Remove(base + bootstrapCacheEnvExt)
+	_ = os.Remove(base + bootstrapCacheProcessExt)
 }
