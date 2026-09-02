@@ -397,16 +397,18 @@ func (d *Daemon) shouldRemount() bool {
 }
 
 func (d *Daemon) startWatch() {
-	d.watcherActive.Store(true)
-	go d.watch()
+	if !d.watcherActive.CompareAndSwap(false, true) {
+		return
+	}
+	go d.watch(d.stopChan, d.kickStop)
 }
 
-func (d *Daemon) watch() {
+func (d *Daemon) watch(stopChan chan struct{}, kickStop *Stopper) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer func() {
 		ticker.Stop()
 		logrus.WithFields(d.daemonLogFields()).Info("daemon exited")
-		close(d.stopChan)
+		close(stopChan)
 		// Set watcherActive to false before remount
 		// remount will call startWatch() which sets it back to true
 		d.watcherActive.Store(false)
@@ -421,7 +423,7 @@ func (d *Daemon) watch() {
 			if !d.tick() {
 				return
 			}
-		case <-d.kickStop.Done():
+		case <-kickStop.Done():
 			for d.IsAlive() {
 				time.Sleep(10 * time.Millisecond)
 			}

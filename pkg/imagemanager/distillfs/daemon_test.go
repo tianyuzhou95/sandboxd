@@ -508,6 +508,34 @@ func newMockDaemon(tmpDir string) *mockDaemon {
 	return mock
 }
 
+func TestDaemon_StartWatchOnlyOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	mock := newMockDaemon(tmpDir)
+	mock.stopChan = make(chan struct{})
+	mock.kickStop = NewStopper()
+	mock.mockIsAlive = func() bool { return false }
+	mock.setState(DaemonStateUnmounting)
+
+	for i := 0; i < 10; i++ {
+		mock.startWatch()
+	}
+	mock.kickStop.Close()
+
+	select {
+	case <-mock.stopChan:
+	case <-time.After(time.Second):
+		t.Fatal("watcher did not stop")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for mock.watcherActive.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if mock.watcherActive.Load() {
+		t.Fatal("watcher remained active after stopping")
+	}
+}
+
 func TestDaemonApplyConfigProtectsCredentials(t *testing.T) {
 	mock := newMockDaemon(t.TempDir())
 	mock.config = &BackendConfig{
